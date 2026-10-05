@@ -87,7 +87,7 @@ HOST_SPEAKS="first"
 
 # Speaker names used in the transcript.
 HOST_LABEL="Host"
-GUEST_LABEL="Gast"
+GUEST_LABEL="Guest"
 
 # true = start each paragraph with its time, like "[00:01:23] Host: ...".
 SPEAKER_TIMESTAMPS="true"
