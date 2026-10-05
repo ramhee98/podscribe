@@ -45,14 +45,15 @@ The model is downloaded automatically the first time you run `podscribe.sh`.
 ## Usage
 
 ```bash
-./podscribe.sh <folder> [--all | --newest] [--speakers] [--prompt "names, places"] [--config <path>]
+./podscribe.sh <folder> [--all | --newest] [--recursive] [--speakers] [--prompt "names, places"] [--config <path>]
 ```
 
 | Option | Description |
 | --- | --- |
-| `<folder>` | Folder containing `.mp3` files (not searched recursively) |
+| `<folder>` | Folder containing `.mp3` files |
 | `--all` | Transcribe every mp3 in the folder |
 | `--newest` | Transcribe only the newest mp3 (the default, unless `MODE="all"` is set in the config) |
+| `--recursive` | Also search subfolders, see [below](#subfolders) |
 | `--speakers` | Speaker mode, see [below](#speaker-mode) |
 | `--prompt "TEXT"` | Initial prompt passed to whisper, to help it spell guest names and local terms correctly |
 | `--config <path>` | Use this config file instead of `podscribe.conf` |
@@ -80,28 +81,58 @@ Help whisper with names and places:
 ./podscribe.sh ~/Podcasts/MyShow --prompt "Anna Muster, Chur, Graubünden, Rhätische Bahn"
 ```
 
+Transcribe every new episode of all shows in a folder tree:
+
+```bash
+./podscribe.sh ~/Podcasts --recursive --all
+```
+
 Use a separate config, e.g. for an English show:
 
 ```bash
 ./podscribe.sh ~/Podcasts/EnglishShow --config ~/podscribe-english.conf
 ```
 
-### Prompts
+### Subfolders
 
-The prompt passed to whisper is chosen in this order:
+By default only the given folder itself is searched. With `--recursive` (or `RECURSIVE="true"`), podscribe also searches its subfolders, up to `MAX_DEPTH` levels deep (default 3, `0` = unlimited):
 
-1. `--prompt "..."` on the command line
-2. A `prompt.txt` file in the episode folder
-3. `DEFAULT_PROMPT` from the config
+- **newest** (default): transcribes the newest mp3 across all subfolders
+- **`--all`**: transcribes every mp3 found. Each transcript is saved next to its mp3. The summary at the end shows counts per folder
+- **`--speakers`**: lists the audio files by path relative to the given folder, grouped by subfolder, so the tracks of one episode are easy to spot
 
-A `prompt.txt` per show is useful for recurring hosts, show names and regional terms:
+Hidden folders and files (starting with `.`, including macOS `._` files) and the models folder are always skipped. Files are processed in order of folder, then name.
 
 ```
-~/Podcasts/MyShow/
-├── prompt.txt          # e.g. "Ramon, Anna, Chur, Graubünden"
-├── Episode 01.mp3
-├── Episode 01.txt      # created by podscribe
-└── Episode 02.mp3
+==> Summary
+    Files:            3
+    ...
+    Folders:
+      .                    0 transcribed, 1 skipped
+      Season 1             2 transcribed
+      Season 2             1 transcribed, 1 failed
+```
+
+### Prompts
+
+The prompt passed to whisper is chosen per file, in this order:
+
+1. `--prompt "..."` on the command line
+2. The nearest `prompt.txt`: first in the file's own folder, then in each parent folder up to the folder you passed to podscribe
+3. `DEFAULT_PROMPT` from the config
+
+So you can put a `prompt.txt` with the hosts' names at the top and add more specific ones per show or season:
+
+```
+~/Podcasts/
+├── prompt.txt              # "Ramon, Anna" – used by MyShow/Season 2
+└── MyShow/
+    ├── Season 1/
+    │   ├── prompt.txt      # "Ramon, Anna, Chur, Graubünden" – used by Season 1
+    │   ├── Episode 01.mp3
+    │   └── Episode 01.txt  # created by podscribe
+    └── Season 2/
+        └── Episode 01.mp3
 ```
 
 ## Speaker mode
@@ -133,7 +164,7 @@ Host track [1-2]: 2
 Guest track [1-2]: 1
 ```
 
-The transcript is saved as `<name>.txt` in the same folder. `<name>` is the shared start of both file names (`Folge 12` above), or the folder name if the file names have nothing in common.
+Add `--recursive` to pick tracks from subfolders. The transcript is saved as `<name>.txt` next to the tracks (if they're in different folders, in the closest folder containing both). `<name>` is the shared start of both file names (`Folge 12` above), or the folder name if the file names have nothing in common.
 
 How it works:
 
@@ -176,6 +207,8 @@ The file is plain bash (`KEY="value"`, no spaces around `=`). Every value is che
 | `LANGUAGE` | `de` | Spoken language code (`de`, `en`, `fr`, …) or `auto` |
 | `DEFAULT_PROMPT` | *(empty)* | Prompt used when there's no `--prompt` and no `prompt.txt` |
 | `MODE` | `newest` | `newest` or `all`. Overridden by `--newest` / `--all` |
+| `RECURSIVE` | `false` | `true` also searches subfolders, like `--recursive` |
+| `MAX_DEPTH` | `3` | Folder levels below the given folder to search when `RECURSIVE` is on. `1` = direct subfolders only, `0` = unlimited |
 | `OUTPUT_FORMATS` | `txt` | Formats to write, separated by spaces or commas: `txt` `srt` `vtt` `lrc` `csv` `json` |
 | `THREADS` | *(empty = all CPU cores)* | Number of CPU threads whisper uses |
 | `OVERWRITE` | `false` | `false` skips episodes whose transcripts already exist in all `OUTPUT_FORMATS`. `true` re-transcribes them and replaces existing files |
@@ -201,7 +234,7 @@ If you add a format to `OUTPUT_FORMATS` later, re-running the script only create
 
 1. Loads the config and checks every setting
 2. Checks that `ffmpeg` and `whisper-cli` are installed (and `python3` in speaker mode)
-3. Picks the newest mp3 (or all of them), skipping any whose transcripts already exist
+3. Finds the mp3s (in subfolders too with `--recursive`) and picks the newest one (or all of them), skipping any whose transcripts already exist
 4. Downloads the model if it's missing
 5. Converts each mp3 to a temporary 16 kHz mono WAV with ffmpeg
 6. Transcribes it with `whisper-cli` and saves `<episode>.<format>` for each output format

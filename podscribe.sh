@@ -2,7 +2,7 @@
 #
 # podscribe - transcribe podcast episodes locally with whisper.cpp
 #
-# Usage: ./podscribe.sh <folder> [--all|--newest] [--speakers] [--prompt "names, places"] [--config <path>]
+# Usage: ./podscribe.sh <folder> [--all|--newest] [--recursive] [--speakers] [--prompt "names, places"] [--config <path>]
 
 set -euo pipefail
 
@@ -21,15 +21,17 @@ usage() {
     cat <<EOF
 Usage: $(basename "$0") <folder> [options]
 
-Transcribes .mp3 files in <folder> (not recursive) locally using whisper.cpp.
+Transcribes .mp3 files in <folder> locally using whisper.cpp.
 
 Options:
   --all              Transcribe every mp3 in the folder
   --newest           Transcribe only the newest mp3 (default)
+  --recursive        Also search subfolders (up to MAX_DEPTH levels)
   --speakers         Speaker mode: pick one track per speaker (host, guest)
                      and get a single transcript labelled by speaker
   --prompt "TEXT"    Initial prompt for whisper (guest names, local terms).
-                     Defaults to <folder>/prompt.txt, then DEFAULT_PROMPT.
+                     Defaults to the nearest prompt.txt (the file's folder,
+                     then its parents up to <folder>), then DEFAULT_PROMPT.
   --config <path>    Use this config file instead of podscribe.conf
   -h, --help         Show this help
 
@@ -44,6 +46,7 @@ EOF
 folder=""
 cli_mode=""
 cli_diarize=""
+cli_recursive=""
 cli_prompt=""
 cli_prompt_set=false
 config_file=""
@@ -60,6 +63,10 @@ while [[ $# -gt 0 ]]; do
             ;;
         --speakers)
             cli_diarize="true"
+            shift
+            ;;
+        --recursive)
+            cli_recursive="true"
             shift
             ;;
         --prompt)
@@ -118,6 +125,9 @@ fi
 if [[ -n "$cli_diarize" ]]; then
     DIARIZE="$cli_diarize"
 fi
+if [[ -n "$cli_recursive" ]]; then
+    RECURSIVE="$cli_recursive"
+fi
 validate_config
 
 # --- Dependencies -------------------------------------------------------------
@@ -140,21 +150,11 @@ if [[ ${#missing[@]} -gt 0 ]]; then
 or run ./install.sh"
 fi
 
-# --- Prompt -------------------------------------------------------------------
-# Precedence: --prompt > <folder>/prompt.txt > DEFAULT_PROMPT
-
-prompt="$DEFAULT_PROMPT"
-if [[ "$cli_prompt_set" == true ]]; then
-    prompt="$cli_prompt"
-elif [[ -f "${folder}/prompt.txt" ]]; then
-    # Collapse newlines so a multi-line prompt.txt works as a single prompt.
-    prompt="$(tr '\n' ' ' < "${folder}/prompt.txt" | sed -e 's/  */ /g' -e 's/^ //' -e 's/ $//')"
-    if [[ -n "$prompt" ]]; then
-        info "Using prompt from ${folder}/prompt.txt"
-    fi
-fi
-
 # --- Helpers ------------------------------------------------------------------
+
+# Absolute root folder, so found paths can be shown relative to it and
+# prompt.txt lookup knows where to stop walking up.
+root="$(cd "$folder" && pwd)"
 
 tmpdir="$(mktemp -d -t podscribe)"
 cleanup() { rm -rf "$tmpdir"; }
@@ -166,6 +166,106 @@ ensure_model() {
         info "Model ${MODEL_NAME} not found"
         download_model
     fi
+}
+
+# Path relative to the root folder ("." for the root itself).
+relpath() {
+    if [[ "$1" == "$root" ]]; then
+        echo "."
+    else
+        printf '%s\n' "${1#"$root"/}"
+    fi
+}
+
+# Sorts NUL-separated paths by folder (component by component), then by name.
+sort_paths() {
+    perl -0 -e '
+        sub parts { my @c = split m{/}, $_[0]; my $name = pop @c; return (\@c, $name) }
+        sub by_folder_then_name {
+            my ($da, $na) = parts($a);
+            my ($db, $nb) = parts($b);
+            my $n = @$da < @$db ? @$da : @$db;
+            for my $i (0 .. $n - 1) {
+                my $c = lc($da->[$i]) cmp lc($db->[$i]) || $da->[$i] cmp $db->[$i];
+                return $c if $c;
+            }
+            return @$da <=> @$db || lc($na) cmp lc($nb) || $na cmp $nb;
+        }
+        my @paths = <STDIN>;
+        print sort by_folder_then_name @paths;
+    '
+}
+
+# find_audio <pattern>...: NUL-separated files under the root folder matching any
+# pattern. Searches subfolders if RECURSIVE (up to MAX_DEPTH levels), skips hidden
+# files and folders and the models folder. Sorted by folder, then name.
+find_audio() {
+    local depth=() names=() pattern
+    if [[ "$RECURSIVE" == false ]]; then
+        depth=(-maxdepth 1)
+    elif (( MAX_DEPTH > 0 )); then
+        depth=(-maxdepth $((MAX_DEPTH + 1)))
+    fi
+    for pattern in "$@"; do
+        if [[ ${#names[@]} -gt 0 ]]; then
+            names+=(-o)
+        fi
+        names+=(-iname "$pattern")
+    done
+    find "$root" -mindepth 1 ${depth[@]+"${depth[@]}"} \
+        \( -type d \( -name '.*' -o -path "${MODELS_DIR%/}" \) -prune \) \
+        -o \( -type f ! -name '.*' \( "${names[@]}" \) -print0 \) \
+        | sort_paths
+}
+
+# Describes where find_audio searched, for messages.
+search_scope() {
+    if [[ "$RECURSIVE" == false ]]; then
+        echo "$folder"
+    elif (( MAX_DEPTH > 0 )); then
+        echo "$folder (including subfolders up to $MAX_DEPTH levels deep)"
+    else
+        echo "$folder (including all subfolders)"
+    fi
+}
+
+# prompt_for <file>: sets prompt and prompt_source for a file.
+# Precedence: --prompt > nearest prompt.txt from the file's folder up to the
+# root folder > DEFAULT_PROMPT
+prompt_for() {
+    if [[ "$cli_prompt_set" == true ]]; then
+        prompt="$cli_prompt"
+        prompt_source="--prompt"
+        return
+    fi
+    local dir
+    dir="$(dirname "$1")"
+    while true; do
+        if [[ -f "${dir}/prompt.txt" ]]; then
+            # Collapse newlines so a multi-line prompt.txt works as a single prompt.
+            prompt="$(tr '\n' ' ' < "${dir}/prompt.txt" | sed -e 's/  */ /g' -e 's/^ //' -e 's/ $//')"
+            prompt_source="$(relpath "${dir}/prompt.txt")"
+            return
+        fi
+        if [[ "$dir" == "$root" || "$dir" == "/" ]]; then
+            break
+        fi
+        dir="$(dirname "$dir")"
+    done
+    prompt="$DEFAULT_PROMPT"
+    prompt_source="DEFAULT_PROMPT"
+}
+
+# use_prompt_for <file>: prompt_for, and say so when a new prompt.txt comes into play.
+prompt=""
+prompt_source=""
+last_prompt_source=""
+use_prompt_for() {
+    prompt_for "$1"
+    if [[ -n "$prompt" && "$prompt_source" == *prompt.txt && "$prompt_source" != "$last_prompt_source" ]]; then
+        info "Using prompt from $prompt_source"
+    fi
+    last_prompt_source="$prompt_source"
 }
 
 # Audio duration in seconds, or empty if ffprobe can't read it.
@@ -243,6 +343,17 @@ ask_track() {
     done
 }
 
+# Deepest folder containing both paths.
+common_dir() {
+    local dir
+    dir="$(dirname "$1")"
+    while [[ "$2" != "$dir"/* && "$dir" != "/" ]]; do
+        dir="$(dirname "$dir")"
+    done
+    printf '%s\n' "$dir"
+}
+
+# episode_name <file a> <file b> <output folder>
 # Name for the combined transcript: the common start of both file names
 # ("Folge 12 Host.wav" + "Folge 12 Gast.wav" -> "Folge 12"), else the folder name.
 episode_name() {
@@ -260,7 +371,7 @@ episode_name() {
     fi
     name="$(printf '%s' "${a:0:i}" | sed -E 's/[[:space:]._(-]+$//')"
     if (( ${#name} < 3 )); then
-        name="$(basename "$(cd "$folder" && pwd)")"
+        name="$(basename "$3")"
     fi
     printf '%s\n' "$name"
 }
@@ -268,19 +379,24 @@ episode_name() {
 transcribe_speakers() {
     [[ -t 0 ]] || die "Speaker mode is interactive. Run it in a terminal so you can pick the tracks."
 
-    local tracks=() durations=() f n
+    local tracks=() durations=() f n dir last_dir=""
     while IFS= read -r -d '' f; do
         tracks+=("$f")
-    done < <(find "$folder" -maxdepth 1 -type f \
-        \( -iname '*.mp3' -o -iname '*.wav' -o -iname '*.m4a' \) -print0 | sort -z)
+    done < <(find_audio '*.mp3' '*.wav' '*.m4a')
     (( ${#tracks[@]} >= 2 )) \
-        || die "Speaker mode needs at least two audio files (mp3, wav, m4a) in $folder, one per speaker"
+        || die "Speaker mode needs at least two audio files (mp3, wav, m4a) in $(search_scope), one per speaker"
 
     echo
-    info "Audio files in $folder"
+    info "Audio files in $(search_scope)"
     for n in "${!tracks[@]}"; do
+        # Blank line between folders, so tracks of the same episode stay together.
+        dir="$(dirname "${tracks[$n]}")"
+        if [[ -n "$last_dir" && "$dir" != "$last_dir" ]]; then
+            echo
+        fi
+        last_dir="$dir"
         durations+=("$(audio_duration "${tracks[$n]}")")
-        printf '  %2d) %s  %s(%s)%s\n' $((n + 1)) "$(basename "${tracks[$n]}")" \
+        printf '  %2d) %s  %s(%s)%s\n' $((n + 1)) "$(relpath "${tracks[$n]}")" \
             "$C_BOLD" "$( [[ -n "${durations[$n]}" ]] && format_duration "${durations[$n]}" || echo "unknown length")" "$C_OFF"
     done
     echo
@@ -301,13 +417,15 @@ transcribe_speakers() {
         fi
     fi
 
-    local episode out
-    episode="$(episode_name "$host_file" "$guest_file")"
-    out="${folder}/${episode}.txt"
+    # The transcript goes next to the tracks (or their closest shared folder).
+    local episode out out_dir
+    out_dir="$(common_dir "$host_file" "$guest_file")"
+    episode="$(episode_name "$host_file" "$guest_file" "$out_dir")"
+    out="${out_dir}/${episode}.txt"
     echo
-    info "Host:  $(basename "$host_file")"
-    info "Guest: $(basename "$guest_file")"
-    info "Transcript: $(basename "$out")"
+    info "Host:  $(relpath "$host_file")"
+    info "Guest: $(relpath "$guest_file")"
+    info "Transcript: $(relpath "$out")"
 
     if [[ -f "$out" && "$OVERWRITE" == false ]]; then
         ok "Transcript exists, skipping (set OVERWRITE=\"true\" to redo it)"
@@ -321,7 +439,8 @@ transcribe_speakers() {
     for role in host guest; do
         if [[ "$role" == host ]]; then file="$host_file"; else file="$guest_file"; fi
         echo
-        info "[$role] Converting $(basename "$file") to 16 kHz mono wav"
+        use_prompt_for "$file"
+        info "[$role] Converting $(relpath "$file") to 16 kHz mono wav"
         convert_to_wav "$file" "${tmpdir}/${role}.wav" || die "ffmpeg failed for $(basename "$file")"
         info "[$role] Transcribing with $THREADS threads (this may take a while)"
         t="$(now)"
@@ -370,7 +489,7 @@ transcribe_speakers() {
 
     # Write into place only after success so partial runs never count as done.
     mv "${tmpdir}/speakers.txt" "$out"
-    ok "Saved $(basename "$out")"
+    ok "Saved $(relpath "$out")"
 
     # Audio is the episode length (the longer track); whisper time covers both tracks.
     local audio="$host_dur"
@@ -391,9 +510,9 @@ fi
 mp3s=()
 while IFS= read -r -d '' f; do
     mp3s+=("$f")
-done < <(find "$folder" -maxdepth 1 -type f -iname '*.mp3' -print0)
+done < <(find_audio '*.mp3')
 
-[[ ${#mp3s[@]} -gt 0 ]] || die "No .mp3 files found in $folder"
+[[ ${#mp3s[@]} -gt 0 ]] || die "No .mp3 files found in $(search_scope)"
 
 if [[ "$MODE" == "newest" ]]; then
     newest=""
@@ -423,10 +542,35 @@ sum_audio=0
 sum_whisper_known=0
 sum_whisper=0
 sum_total=0
+# Per-folder counts for the summary (parallel arrays, bash 3.2 has no maps).
+folder_names=()
+folder_done=()
+folder_skipped=()
+folder_failed=()
+
+# count_folder <file> done|skipped|failed
+count_folder() {
+    local dir idx=0
+    dir="$(relpath "$(dirname "$1")")"
+    while (( idx < ${#folder_names[@]} )) && [[ "${folder_names[$idx]}" != "$dir" ]]; do
+        idx=$((idx + 1))
+    done
+    if (( idx == ${#folder_names[@]} )); then
+        folder_names+=("$dir")
+        folder_done+=(0)
+        folder_skipped+=(0)
+        folder_failed+=(0)
+    fi
+    case "$2" in
+        done)    folder_done[$idx]=$((folder_done[idx] + 1)) ;;
+        skipped) folder_skipped[$idx]=$((folder_skipped[idx] + 1)) ;;
+        failed)  folder_failed[$idx]=$((folder_failed[idx] + 1)) ;;
+    esac
+}
 
 for mp3 in "${mp3s[@]}"; do
     i=$((i + 1))
-    name="$(basename "$mp3")"
+    name="$(relpath "$mp3")"
     base="${mp3%.*}"
 
     echo
@@ -440,6 +584,7 @@ for mp3 in "${mp3s[@]}"; do
         if [[ "$all_exist" == true ]]; then
             ok "Transcript exists, skipping"
             skipped=$((skipped + 1))
+            count_folder "$mp3" skipped
             continue
         fi
     fi
@@ -454,10 +599,12 @@ for mp3 in "${mp3s[@]}"; do
         warn "Couldn't read the audio duration, speed stats will be skipped for this file"
     fi
 
+    use_prompt_for "$mp3"
     info "Converting to 16 kHz mono wav"
     if ! convert_to_wav "$mp3" "$wav"; then
         warn "ffmpeg failed for $name"
         failed=$((failed + 1))
+        count_folder "$mp3" failed
         rm -f "$wav"
         continue
     fi
@@ -472,6 +619,7 @@ for mp3 in "${mp3s[@]}"; do
     if ! run_whisper "$wav" "$out_base" "${format_flags[@]}"; then
         warn "Transcription failed for $name"
         failed=$((failed + 1))
+        count_folder "$mp3" failed
         rm -f "$wav"
         continue
     fi
@@ -494,6 +642,7 @@ for mp3 in "${mp3s[@]}"; do
     print_timing "$duration" "$whisper_time" "$total_time"
 
     done_count=$((done_count + 1))
+    count_folder "$mp3" done
     sum_whisper="$(add_seconds "$sum_whisper" "$whisper_time")"
     sum_total="$(add_seconds "$sum_total" "$total_time")"
     if [[ -n "$duration" ]]; then
@@ -505,14 +654,32 @@ done
 echo
 info "Done: $done_count transcribed, $skipped skipped, $failed failed"
 
-if [[ "$MODE" == "all" && $done_count -gt 0 ]]; then
+if [[ "$MODE" == "all" && ( $done_count -gt 0 || ${#folder_names[@]} -gt 1 ) ]]; then
     echo
     info "Summary"
-    printf '    %-18s%s\n' "Files:" "$done_count"
-    printf '    %-18s%s\n' "Audio:" "$(format_duration "$sum_audio")"
-    printf '    %-18s%s (total %s incl. conversion)\n' "Transcribed:" \
-        "$(format_duration "$sum_whisper")" "$(format_duration "$sum_total")"
-    printf '    %-18s%s\n' "Per audio minute:" "$(per_audio_minute "$sum_whisper_known" "$sum_audio")"
-    printf '    %-18s%s\n' "Speed:" "$(realtime_factor "$sum_whisper_known" "$sum_audio")"
+    if [[ $done_count -gt 0 ]]; then
+        printf '    %-18s%s\n' "Files:" "$done_count"
+        printf '    %-18s%s\n' "Audio:" "$(format_duration "$sum_audio")"
+        printf '    %-18s%s (total %s incl. conversion)\n' "Transcribed:" \
+            "$(format_duration "$sum_whisper")" "$(format_duration "$sum_total")"
+        printf '    %-18s%s\n' "Per audio minute:" "$(per_audio_minute "$sum_whisper_known" "$sum_audio")"
+        printf '    %-18s%s\n' "Speed:" "$(realtime_factor "$sum_whisper_known" "$sum_audio")"
+    fi
+    # Per-folder breakdown, when more than one folder was involved.
+    if [[ ${#folder_names[@]} -gt 1 ]]; then
+        width=0
+        for dir in "${folder_names[@]}"; do
+            if (( ${#dir} > width )); then
+                width=${#dir}
+            fi
+        done
+        echo "    Folders:"
+        for idx in "${!folder_names[@]}"; do
+            counts="${folder_done[$idx]} transcribed"
+            (( folder_skipped[idx] == 0 )) || counts+=", ${folder_skipped[$idx]} skipped"
+            (( folder_failed[idx] == 0 )) || counts+=", ${folder_failed[$idx]} failed"
+            printf '      %-*s  %s\n' "$width" "${folder_names[$idx]}" "$counts"
+        done
+    fi
 fi
 [[ $failed -eq 0 ]] || exit 1

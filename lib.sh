@@ -33,6 +33,8 @@ config_defaults() {
     LANGUAGE="de"
     DEFAULT_PROMPT=""
     MODE="newest"
+    RECURSIVE="false"
+    MAX_DEPTH="3"
     OUTPUT_FORMATS="txt"
     THREADS=""
     OVERWRITE="false"
@@ -120,6 +122,10 @@ $(common_models)"
         || cfg_err LANGUAGE "$LANGUAGE" "expected a language code like de or en, or auto"
     [[ "$MODE" == "newest" || "$MODE" == "all" ]] \
         || cfg_err MODE "$MODE" "expected newest or all"
+    [[ "$RECURSIVE" == "true" || "$RECURSIVE" == "false" ]] \
+        || cfg_err RECURSIVE "$RECURSIVE" "expected true or false"
+    [[ "$MAX_DEPTH" =~ ^[0-9]+$ ]] \
+        || cfg_err MAX_DEPTH "$MAX_DEPTH" "expected a number of folder levels, or 0 for unlimited"
     [[ -z "$THREADS" || "$THREADS" =~ ^[1-9][0-9]*$ ]] \
         || cfg_err THREADS "$THREADS" "expected a positive number, or empty for all cores"
     [[ "$OVERWRITE" == "true" || "$OVERWRITE" == "false" ]] \
