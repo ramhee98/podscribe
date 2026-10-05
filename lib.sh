@@ -344,6 +344,60 @@ python_ok() {
     python3 -c 'import sys; sys.exit(sys.version_info < (3, 8))' >/dev/null 2>&1
 }
 
+# --- Output names -------------------------------------------------------------
+# Where transcripts go. These use $root (the folder given on the command line,
+# absolute), OUTPUT_LOCATION and OUTPUT_SEPARATOR. Tested in tests/test_output_names.sh.
+
+# Path relative to the root folder ("." for the root itself).
+relpath() {
+    if [[ "$1" == "$root" ]]; then
+        echo "."
+    else
+        printf '%s\n' "${1#"$root"/}"
+    fi
+}
+
+# output_path <source folder> <name>: where a transcript called <name> for files in
+# <source folder> goes. With OUTPUT_LOCATION="base" that's the root folder, with
+# the relative subfolder path as prefix (season2/ep05 -> season2_ep05).
+output_path() {
+    local dir="$1" name="$2" rel
+    if [[ "$OUTPUT_LOCATION" == "source" ]]; then
+        printf '%s/%s\n' "$dir" "$name"
+        return
+    fi
+    rel="$(relpath "$dir")"
+    if [[ "$rel" == "." ]]; then
+        printf '%s/%s\n' "$root" "$name"
+    else
+        printf '%s/%s%s%s\n' "$root" "${rel//\//$OUTPUT_SEPARATOR}" "$OUTPUT_SEPARATOR" "$name"
+    fi
+}
+
+# Deepest folder containing both paths.
+common_dir() {
+    local dir
+    dir="$(dirname "$1")"
+    while [[ "$2" != "$dir"/* && "$dir" != "/" ]]; do
+        dir="$(dirname "$dir")"
+    done
+    printf '%s\n' "$dir"
+}
+
+# transcript_base <audio file>: transcript path without extension for a single file
+# (season2/ep05.mp3 -> <root>/season2_ep05 with OUTPUT_LOCATION="base").
+transcript_base() {
+    output_path "$(dirname "$1")" "$(basename "${1%.*}")"
+}
+
+# speaker_transcript_path <first host file> <first guest file>: the speaker-mode
+# transcript, named after the first host file. With OUTPUT_LOCATION="source" it
+# goes next to the tracks (or their closest shared folder), with "base" into the
+# root folder with that folder's subfolder prefix.
+speaker_transcript_path() {
+    printf '%s.txt\n' "$(output_path "$(common_dir "$1" "$2")" "$(basename "${1%.*}")")"
+}
+
 # --- Model --------------------------------------------------------------------
 
 # fetch_model <file name> <base URL> <destination> <help text>

@@ -226,7 +226,7 @@ Host track [1-2, several parts: 3,4, q to quit]: 2
 Guest track [1-2, several parts: 3,4, q to quit]: 1
 ```
 
-Tracks in subfolders are listed too (unless `--no-recursive`). The transcript is saved as `<name>.txt` in the given folder, with the subfolder prefix described [above](#where-transcripts-go). With `--output source` it goes next to the tracks instead (if they're in different folders, in the closest folder containing both). `<name>` is based on the first host file: the start it shares with the first guest file (`Folge 12` above), or the folder name if the file names have nothing in common.
+Tracks in subfolders are listed too (unless `--no-recursive`). The transcript is named after the first host file and saved in the given folder, with the subfolder prefix described [above](#where-transcripts-go). For example, host `Imported Files/TX01_MIC001_20260915_180223_orig.wav` gives `Imported Files_TX01_MIC001_20260915_180223_orig.txt`. With `--output source` it goes next to the tracks instead (if they're in different folders, in the closest folder containing both), e.g. `Imported Files/TX01_MIC001_20260915_180223_orig.txt`.
 
 How it works:
 
@@ -295,7 +295,7 @@ Guest track [1-4, several parts: 3,4, q to quit]: 1, 2
 ==> Guest: 2 parts, 42:17
         Folge 13 Gast Teil 1.m4a
         Folge 13 Gast Teil 2.wav
-==> Transcript: Folge 13.txt
+==> Transcript: Folge 13 Host Teil 1.txt
 ```
 
 - Formats can be mixed. Every part is converted to 16 kHz mono WAV first, then joined
@@ -414,6 +414,14 @@ Press Ctrl+C at any time. podscribe stops whisper-cli/ffmpeg/curl right away (no
 - With `KEEP_WAV="true"`, a WAV whose conversion had finished is kept. Partially converted WAVs are always deleted
 - A partial model download (in `podscribe.sh` or `install.sh`) is deleted, so the next run starts the download again
 
+### Tests
+
+```bash
+tests/test_output_names.sh
+```
+
+Checks transcript names and locations for single files and speaker mode, with `OUTPUT_LOCATION` `base` and `source`, nested subfolders and custom separators. It only tests the path logic, so it runs instantly and needs no audio or models.
+
 ### Files
 
 | File | Purpose |
@@ -425,3 +433,4 @@ Press Ctrl+C at any time. podscribe stops whisper-cli/ffmpeg/curl right away (no
 | `podscribe.conf.example` | Documented config with all defaults |
 | `podscribe.conf` | Your local config (gitignored) |
 | `models/` | Downloaded whisper and VAD models (gitignored) |
+| `tests/` | Tests, e.g. `tests/test_output_names.sh` for where transcripts are saved and how they're named |

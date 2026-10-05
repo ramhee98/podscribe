@@ -217,31 +217,7 @@ ensure_model() {
     fi
 }
 
-# Path relative to the root folder ("." for the root itself).
-relpath() {
-    if [[ "$1" == "$root" ]]; then
-        echo "."
-    else
-        printf '%s\n' "${1#"$root"/}"
-    fi
-}
 
-# output_path <source folder> <name>: where a transcript called <name> for files in
-# <source folder> goes. With OUTPUT_LOCATION="base" that's the root folder, with
-# the relative subfolder path as prefix (season2/ep05 -> season2_ep05).
-output_path() {
-    local dir="$1" name="$2" rel
-    if [[ "$OUTPUT_LOCATION" == "source" ]]; then
-        printf '%s/%s\n' "$dir" "$name"
-        return
-    fi
-    rel="$(relpath "$dir")"
-    if [[ "$rel" == "." ]]; then
-        printf '%s/%s\n' "$root" "$name"
-    else
-        printf '%s/%s%s%s\n' "$root" "${rel//\//$OUTPUT_SEPARATOR}" "$OUTPUT_SEPARATOR" "$name"
-    fi
-}
 
 # Sorts NUL-separated paths by folder (component by component), then by name.
 sort_paths() {
@@ -512,38 +488,7 @@ build_track() {
     rm -f "$list"
 }
 
-# Deepest folder containing both paths.
-common_dir() {
-    local dir
-    dir="$(dirname "$1")"
-    while [[ "$2" != "$dir"/* && "$dir" != "/" ]]; do
-        dir="$(dirname "$dir")"
-    done
-    printf '%s\n' "$dir"
-}
 
-# episode_name <file a> <file b> <output folder>
-# Name for the combined transcript: the common start of both file names
-# ("Folge 12 Host.wav" + "Folge 12 Gast.wav" -> "Folge 12"), else the folder name.
-episode_name() {
-    local a b i=0 name
-    a="$(basename "${1%.*}")"
-    b="$(basename "${2%.*}")"
-    while (( i < ${#a} )) && [[ "${a:i:1}" == "${b:i:1}" ]]; do
-        i=$((i + 1))
-    done
-    # Don't cut a word in half ("mic1" + "mic2" -> "mic"): back up to a separator.
-    if [[ "${a:i:1}${b:i:1}" =~ [[:alnum:]] ]]; then
-        while (( i > 0 )) && [[ "${a:i-1:1}" =~ [[:alnum:]] ]]; do
-            i=$((i - 1))
-        done
-    fi
-    name="$(printf '%s' "${a:0:i}" | sed -E 's/[[:space:]._(-]+$//')"
-    if (( ${#name} < 3 )); then
-        name="$(basename "$3")"
-    fi
-    printf '%s\n' "$name"
-}
 
 # collect_tracks <pattern>...: finds matching audio files (see find_audio) and
 # stores them with their durations in tracks/durations.
@@ -663,13 +608,8 @@ speaker_episode() {
     guest_files=("${sel_files[@]}")
     guest_dur="$(sum_durations "${sel_durs[@]}")"
 
-    # The transcript is named after the first host file (and the first guest file, if
-    # their names share a start) and goes next to them (or their closest shared folder),
-    # or into the root folder with OUTPUT_LOCATION="base".
-    local episode out out_dir host_file="${host_files[0]}" guest_file="${guest_files[0]}"
-    out_dir="$(common_dir "$host_file" "$guest_file")"
-    episode="$(episode_name "$host_file" "$guest_file" "$out_dir")"
-    out="$(output_path "$out_dir" "$episode").txt"
+    local out host_file="${host_files[0]}" guest_file="${guest_files[0]}"
+    out="$(speaker_transcript_path "$host_file" "$guest_file")"
     local host_desc guest_desc
     host_desc="$(describe_parts "${host_files[@]}")"
     guest_desc="$(describe_parts "${guest_files[@]}")"
@@ -996,7 +936,7 @@ count_folder() {
 for mp3 in "${mp3s[@]}"; do
     i=$((i + 1))
     name="$(relpath "$mp3")"
-    base="$(output_path "$(dirname "$mp3")" "$(basename "${mp3%.*}")")"
+    base="$(transcript_base "$mp3")"
 
     if [[ ${#picked_parts[@]} -gt 1 ]]; then
         name="$(describe_parts "${picked_parts[@]}")"
