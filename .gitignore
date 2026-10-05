@@ -1,0 +1,8 @@
+# Local config (copy from podscribe.conf.example)
+podscribe.conf
+
+# Downloaded whisper models
+models/
+
+# macOS
+.DS_Store

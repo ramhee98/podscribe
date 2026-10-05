@@ -1,0 +1,47 @@
+# podscribe configuration
+#
+# Copy this file to podscribe.conf (next to podscribe.sh) and adjust it:
+#
+#     cp podscribe.conf.example podscribe.conf
+#
+# The file is sourced by bash, so use KEY="value" with no spaces around "=".
+# Precedence: built-in defaults < config file < command-line arguments.
+# The values below are the built-in defaults.
+
+# Whisper model file name. Other options include ggml-large-v3.bin (slower,
+# slightly more accurate) or ggml-medium.bin / ggml-small.bin (faster).
+MODEL_NAME="ggml-large-v3-turbo.bin"
+
+# Base URL the model is downloaded from if it isn't in MODELS_DIR yet.
+# The file name is appended: "${MODEL_URL}/${MODEL_NAME}".
+MODEL_URL="https://huggingface.co/ggerganov/whisper.cpp/resolve/main"
+
+# Where models are stored. Relative paths are resolved against the script
+# directory. Absolute paths and "$HOME/..." also work.
+MODELS_DIR="models"
+
+# Spoken language as a whisper language code (de, en, fr, ...), or "auto"
+# to detect it.
+LANGUAGE="de"
+
+# Prompt used when neither --prompt nor a prompt.txt in the episode folder is
+# given. Useful for host names or terms that appear in every episode.
+DEFAULT_PROMPT=""
+
+# Which mp3s to transcribe: "newest" (only the most recent file) or "all".
+# Override on the command line with --newest / --all.
+MODE="newest"
+
+# Transcript formats to write next to each mp3, separated by spaces or commas.
+# Supported: txt srt vtt lrc csv json
+OUTPUT_FORMATS="txt"
+
+# Number of CPU threads for whisper-cli. Empty = all CPU cores.
+THREADS=""
+
+# true = re-transcribe episodes that already have transcripts and replace them.
+# false = skip episodes whose transcripts (all OUTPUT_FORMATS) already exist.
+OVERWRITE="false"
+
+# true = keep the converted 16 kHz mono WAV as <episode>.wav next to the mp3.
+KEEP_WAV="false"
