@@ -9,6 +9,8 @@ set -euo pipefail
 
 # shellcheck source=lib.sh
 source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib.sh"
+# Removes a partial model download if the installer fails or is aborted.
+setup_cleanup
 
 step() { printf '\n%s[%s/6]%s %s%s%s\n' "$C_BLUE" "$1" "$C_OFF" "$C_BOLD" "$2" "$C_OFF"; }
 

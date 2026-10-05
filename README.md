@@ -380,6 +380,15 @@ After each file, podscribe also shows how much speech it contains:
 
 Transcripts are only moved into place once whisper finishes successfully, so a cancelled run never leaves a partial file that would get skipped next time.
 
+### Aborting
+
+Press Ctrl+C at any time. podscribe stops whisper-cli/ffmpeg/curl right away (nothing keeps running in the background), removes its temporary files, prints `Aborted, cleaned up temporary files` and exits with code 130 (143 when stopped with `kill`/`TERM`).
+
+- Transcripts are written to a temporary file and only renamed into place when complete, so you never get a half-written transcript, even on another drive
+- With `--all`, transcripts that were already finished stay. Only the file in progress is cleaned up
+- With `KEEP_WAV="true"`, a WAV whose conversion had finished is kept. Partially converted WAVs are always deleted
+- A partial model download (in `podscribe.sh` or `install.sh`) is deleted, so the next run starts the download again
+
 ### Files
 
 | File | Purpose |

@@ -17,6 +17,7 @@ while [[ -L "$script_path" ]]; do
 done
 # shellcheck source=lib.sh
 source "$(cd "$(dirname "$script_path")" && pwd)/lib.sh"
+setup_cleanup
 
 usage() {
     cat <<EOF
@@ -182,10 +183,9 @@ fi
 # prompt.txt lookup knows where to stop walking up.
 root="$(cd "$folder" && pwd)"
 
+# Work folder for converted WAVs, concat lists, whisper output and stats.
 tmpdir="$(mktemp -d -t podscribe)"
-cleanup() { rm -rf "$tmpdir"; }
-trap cleanup EXIT
-trap 'echo; warn "Interrupted"; exit 130' INT TERM
+register_temp "$tmpdir"
 
 ensure_model() {
     if [[ ! -f "$MODEL_PATH" ]]; then
@@ -319,7 +319,7 @@ audio_duration() {
 
 # convert_to_wav <input> <output.wav>: 16 kHz mono, as whisper expects
 convert_to_wav() {
-    ffmpeg -nostdin -hide_banner -loglevel error -y \
+    run_bg ffmpeg -nostdin -hide_banner -loglevel error -y \
         -i "$1" -ar 16000 -ac 1 -c:a pcm_s16le "$2"
 }
 
@@ -333,7 +333,7 @@ run_whisper() {
     if [[ -n "$prompt" ]]; then
         args+=(--prompt "$prompt")
     fi
-    if ! whisper-cli "${args[@]}" 2>"${out_base}.log"; then
+    if ! run_bg whisper-cli "${args[@]}" 2>"${out_base}.log"; then
         warn "whisper-cli failed. Last log lines:"
         tail -n 20 "${out_base}.log" >&2 || true
         return 1
@@ -445,12 +445,12 @@ describe_parts() {
     fi
 }
 
-# build_track <role> <file>...: converts each part to 16 kHz mono wav, then joins
-# them in the given order into <tmpdir>/<role>.wav, so timestamps run on across parts.
+# build_track <role> <output.wav> <file>...: converts each part to 16 kHz mono wav,
+# then joins them in the given order into <output.wav>, so timestamps run on across parts.
 build_track() {
-    local role="$1" k=0 part progress="" list
+    local role="$1" out="$2" k=0 part progress="" list
     list="${tmpdir}/${role}_parts.txt"
-    shift
+    shift 2
     : > "$list"
     for part in "$@"; do
         k=$((k + 1))
@@ -462,12 +462,12 @@ build_track() {
         echo "file '${tmpdir}/${role}_part${k}.wav'" >> "$list"
     done
     if [[ $# -eq 1 ]]; then
-        mv "${tmpdir}/${role}_part1.wav" "${tmpdir}/${role}.wav"
+        mv "${tmpdir}/${role}_part1.wav" "$out"
     else
         info "[$role] Joining $# parts into one track"
         # All parts are identical PCM wavs now, so they can be joined without re-encoding.
-        ffmpeg -nostdin -hide_banner -loglevel error -y -f concat -safe 0 -i "$list" \
-            -c copy "${tmpdir}/${role}.wav" || die "Joining the $role parts failed"
+        run_bg ffmpeg -nostdin -hide_banner -loglevel error -y -f concat -safe 0 -i "$list" \
+            -c copy "$out" || die "Joining the $role parts failed"
         rm -f "${tmpdir}/${role}"_part*.wav
     fi
     rm -f "$list"
@@ -642,20 +642,34 @@ speaker_episode() {
         return 0
     fi
 
-    local start sum_whisper=0 t role
+    # KEEP_WAV keeps each speaker's combined track, named after its first file.
+    # Each episode gets its own WAV names, so an abort keeps the right ones.
+    local host_wav="${tmpdir}/host_${k}.wav" guest_wav="${tmpdir}/guest_${k}.wav"
+    local host_keep="${host_file%.*}.wav" guest_keep="${guest_file%.*}.wav"
+    [[ ${#host_files[@]} -eq 1 ]] || host_keep="${host_file%.*} (${#host_files[@]} parts).wav"
+    [[ ${#guest_files[@]} -eq 1 ]] || guest_keep="${guest_file%.*} (${#guest_files[@]} parts).wav"
+
+    local start sum_whisper=0 t role wav
     start="$(now)"
     for role in host guest; do
         if [[ "$role" == host ]]; then
             set -- "${host_files[@]}"
+            wav="$host_wav"
         else
             set -- "${guest_files[@]}"
+            wav="$guest_wav"
         fi
         echo
         use_prompt_for "$1"
-        build_track "$role" "$@"
+        build_track "$role" "$wav" "$@"
+        if [[ "$role" == host ]]; then
+            register_keep "$host_wav" "$host_keep"
+        else
+            register_keep "$guest_wav" "$guest_keep"
+        fi
         info "[$role] Transcribing with $THREADS threads (this may take a while)"
         t="$(now)"
-        run_whisper "${tmpdir}/${role}.wav" "${tmpdir}/${role}" -oj -ojf \
+        run_whisper "$wav" "${tmpdir}/${role}" -oj -ojf \
             || die "Transcription failed for the $role track"
         sum_whisper="$(add_seconds "$sum_whisper" "$(elapsed_since "$t")")"
     done
@@ -664,8 +678,8 @@ speaker_episode() {
     info "Separating speakers (energy margin ${ENERGY_MARGIN_DB} dB)"
     local detected merged="${tmpdir}/episode${k}.json"
     detected="$(python3 "${SCRIPT_DIR}/diarize.py" merge \
-        --host-json "${tmpdir}/host.json" --host-audio "${tmpdir}/host.wav" \
-        --guest-json "${tmpdir}/guest.json" --guest-audio "${tmpdir}/guest.wav" \
+        --host-json "${tmpdir}/host.json" --host-audio "$host_wav" \
+        --guest-json "${tmpdir}/guest.json" --guest-audio "$guest_wav" \
         --margin "$ENERGY_MARGIN_DB" --host-speaks "$HOST_SPEAKS" \
         --out "$merged")" || die "Speaker analysis failed"
     [[ -n "$detected" ]] || die "No speech found in either track"
@@ -698,17 +712,11 @@ speaker_episode() {
     python3 "${SCRIPT_DIR}/diarize.py" render "$merged" "${render_args[@]}" \
         || die "Writing the transcript failed"
 
-    # KEEP_WAV keeps each speaker's combined track, named after its first file.
-    local suffix
-    suffix=""
-    [[ ${#host_files[@]} -eq 1 ]] || suffix=" (${#host_files[@]} parts)"
-    keep_or_remove_wav "${tmpdir}/host.wav" "${host_file%.*}${suffix}.wav"
-    suffix=""
-    [[ ${#guest_files[@]} -eq 1 ]] || suffix=" (${#guest_files[@]} parts)"
-    keep_or_remove_wav "${tmpdir}/guest.wav" "${guest_file%.*}${suffix}.wav"
+    keep_or_remove_wav "$host_wav" "$host_keep"
+    keep_or_remove_wav "$guest_wav" "$guest_keep"
 
     # Write into place only after success so partial runs never count as done.
-    mv "${tmpdir}/speakers.txt" "$out"
+    move_into_place "${tmpdir}/speakers.txt" "$out"
     ok "Saved $(relpath "$out")"
 
     # Audio is the episode length (the longer track); whisper time covers both tracks.
@@ -777,8 +785,9 @@ transcribe_speakers() {
         if (( total_eps > 1 )); then
             info "${C_BOLD}Episode $k of $total_eps${C_OFF}"
         fi
-        # Subshell: a failing episode (die) doesn't stop the remaining ones.
-        if ! ( speaker_episode "$k" "${ep_host[$((k - 1))]}" "${ep_guest[$((k - 1))]}" ); then
+        # Own (background) subshell: a failing episode (die) doesn't stop the remaining
+        # ones, and Ctrl+C can stop it and everything it started right away.
+        if ! run_bg speaker_episode "$k" "${ep_host[$((k - 1))]}" "${ep_guest[$((k - 1))]}"; then
             warn "Episode $k failed"
             echo "failed" >> "${tmpdir}/episodes.tsv"
         fi
@@ -981,7 +990,13 @@ for mp3 in "${mp3s[@]}"; do
         fi
     fi
 
-    wav="${tmpdir}/audio.wav"
+    # Own WAV name per file, so an abort with KEEP_WAV keeps the right one.
+    wav="${tmpdir}/audio_${i}.wav"
+    if [[ ${#picked_parts[@]} -gt 1 ]]; then
+        keep_dest="${mp3%.*} (${#picked_parts[@]} parts).wav"
+    else
+        keep_dest="${mp3%.*}.wav"
+    fi
     out_base="${tmpdir}/transcript"
     rm -f "${out_base}".*
 
@@ -997,8 +1012,8 @@ for mp3 in "${mp3s[@]}"; do
 
     use_prompt_for "$mp3"
     if [[ ${#picked_parts[@]} -gt 1 ]]; then
-        # Parts are converted and joined into $wav (${tmpdir}/audio.wav).
-        build_track audio "${picked_parts[@]}"
+        # Parts are converted and joined into $wav.
+        build_track audio "$wav" "${picked_parts[@]}"
     else
         info "Converting to 16 kHz mono wav"
     fi
@@ -1009,6 +1024,7 @@ for mp3 in "${mp3s[@]}"; do
         rm -f "$wav"
         continue
     fi
+    register_keep "$wav" "$keep_dest"
 
     info "Transcribing with $THREADS threads (this may take a while)"
     format_flags=()
@@ -1052,11 +1068,7 @@ for mp3 in "${mp3s[@]}"; do
     fi
 
     # The WAV is audio, not a transcript, so it always stays next to its source.
-    if [[ ${#picked_parts[@]} -gt 1 ]]; then
-        keep_or_remove_wav "$wav" "${mp3%.*} (${#picked_parts[@]} parts).wav"
-    else
-        keep_or_remove_wav "$wav" "${mp3%.*}.wav"
-    fi
+    keep_or_remove_wav "$wav" "$keep_dest"
 
     # Write into place only after success so partial runs never count as done.
     # Without OVERWRITE, transcripts that already exist are left untouched.
@@ -1064,7 +1076,7 @@ for mp3 in "${mp3s[@]}"; do
     for fmt in "${FORMATS[@]}"; do
         dest="${base}.${fmt}"
         if [[ "$OVERWRITE" == true || ! -f "$dest" ]]; then
-            mv "${out_base}.${fmt}" "$dest"
+            move_into_place "${out_base}.${fmt}" "$dest"
             saved+=("$(relpath "$dest")")
         fi
     done

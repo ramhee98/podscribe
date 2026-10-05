@@ -23,6 +23,121 @@ ok()    { printf '%s✓%s %s\n' "$C_GREEN" "$C_OFF" "$*"; }
 warn()  { printf '%s!%s %s\n' "$C_YELLOW" "$C_OFF" "$*" >&2; }
 die()   { printf '%sError:%s %s\n' "$C_RED" "$C_OFF" "$*" >&2; exit 1; }
 
+# --- Cleanup ------------------------------------------------------------------
+# One central list of temporary files and folders, removed when the script exits,
+# fails or is aborted (Ctrl+C, TERM). It's kept in a file so that subshells (e.g.
+# speaker episodes) can register paths too. Entries:
+#   temp <path>         always removed (work folders, partial downloads, ...)
+#   keep <path> <dest>  a finished converted WAV: moved to <dest> if KEEP_WAV is
+#                       true (and <dest> doesn't exist yet), otherwise removed with
+#                       its work folder
+# Only finished WAVs are registered as "keep", so partial ones are always deleted.
+
+CLEANUP_LIST=""
+
+# setup_cleanup: creates the list and installs the traps. Call once, early.
+setup_cleanup() {
+    CLEANUP_LIST="$(mktemp -t podscribe-cleanup)"
+    # Keep the original stdout/stderr: an abort can arrive while they're redirected
+    # (e.g. whisper's log), and its message should still reach the terminal.
+    exec 8>&1 9>&2
+    trap cleanup_on_exit EXIT
+    trap 'abort 130' INT
+    trap 'abort 143' TERM
+}
+
+# register_temp <path>: remove <path> on exit
+register_temp() {
+    [[ -n "$CLEANUP_LIST" ]] || return 0
+    printf 'temp\0%s\0\0' "$1" >> "$CLEANUP_LIST"
+}
+
+# register_keep <wav> <destination>: a finished WAV that KEEP_WAV may keep on abort
+register_keep() {
+    [[ -n "$CLEANUP_LIST" ]] || return 0
+    printf 'keep\0%s\0%s\0' "$1" "$2" >> "$CLEANUP_LIST"
+}
+
+cleanup_temp() {
+    [[ -n "$CLEANUP_LIST" && -f "$CLEANUP_LIST" ]] || return 0
+    local kind path dest
+    # Kept WAVs first, before their work folder is removed.
+    while IFS= read -r -d '' kind && IFS= read -r -d '' path && IFS= read -r -d '' dest; do
+        if [[ "$kind" == keep && "${KEEP_WAV:-false}" == true && -f "$path" && ! -e "$dest" ]]; then
+            if mv "$path" "$dest" 2>/dev/null; then
+                info "Kept converted WAV $(basename "$dest")"
+            fi
+        fi
+    done < "$CLEANUP_LIST"
+    while IFS= read -r -d '' kind && IFS= read -r -d '' path && IFS= read -r -d '' dest; do
+        if [[ "$kind" == temp ]]; then
+            rm -rf "$path"
+        fi
+    done < "$CLEANUP_LIST"
+    rm -f "$CLEANUP_LIST"
+    CLEANUP_LIST=""
+}
+
+# kill_tree <pid>: stops a process and everything it started, children first
+kill_tree() {
+    local child
+    for child in $(pgrep -P "$1" 2>/dev/null); do
+        kill_tree "$child"
+    done
+    kill -TERM "$1" 2>/dev/null || true
+}
+
+# Stops all processes this script started (whisper-cli, ffmpeg, curl, ...).
+kill_children() {
+    local child
+    for child in $(pgrep -P $$ 2>/dev/null); do
+        kill_tree "$child"
+        # Reap it quietly, otherwise bash reports "Terminated: 15".
+        wait "$child" 2>/dev/null || true
+    done
+}
+
+cleanup_on_exit() {
+    kill_children
+    cleanup_temp
+}
+
+# abort <exit code>: Ctrl+C or TERM
+abort() {
+    trap - INT TERM
+    exec 1>&8 2>&9
+    kill_children
+    # After stopping children, so e.g. curl can't redraw its progress bar over it.
+    echo >&2
+    cleanup_temp
+    warn "Aborted, cleaned up temporary files"
+    exit "$1"
+}
+
+# run_bg <command> [args...]: runs a (long) command and waits for it.
+# Running it in the background lets a signal interrupt the wait right away (bash
+# only runs traps between foreground commands), so the abort handler can stop the
+# command instead of waiting for it to finish. stdin is passed on explicitly,
+# since background commands would otherwise read from /dev/null.
+run_bg() {
+    local status=0
+    "$@" <&0 &
+    wait $! || status=$?
+    return "$status"
+}
+
+# move_into_place <file> <destination>: never leaves a half-written destination.
+# Moving onto another drive is a copy, which an abort can cut short, so the file
+# is first moved next to the destination under a hidden temporary name (cleaned
+# up if aborted), then renamed, which is a single step on the same drive.
+move_into_place() {
+    local tmp
+    tmp="$(dirname "$2")/.$(basename "$2").podscribe-partial"
+    register_temp "$tmp"
+    mv "$1" "$tmp"
+    mv "$tmp" "$2"
+}
+
 # --- Config -------------------------------------------------------------------
 
 # Built-in defaults. Keep in sync with podscribe.conf.example.
@@ -211,7 +326,9 @@ download_model() {
     mkdir -p "$MODELS_DIR"
 
     # Download to a temp file so an interrupted download never looks complete.
-    if ! curl -L --fail --progress-bar -o "$part" "$src"; then
+    # It's registered for cleanup, so an aborted download is removed too.
+    register_temp "$part"
+    if ! run_bg curl -L --fail --progress-bar -o "$part" "$src"; then
         rm -f "$part"
         die "Model download failed: $src
 Check that MODEL_NAME is spelled correctly.
