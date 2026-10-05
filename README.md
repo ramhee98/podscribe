@@ -10,14 +10,36 @@ Audio never leaves your machine.
 
 ## Installation
 
+Requires macOS and [Homebrew](https://brew.sh). Apple Silicon is strongly recommended.
+
 ```bash
-brew install whisper-cpp ffmpeg
 git clone <this repo> podscribe
 cd podscribe
+./install.sh
+```
+
+The installer:
+
+1. Checks that you're on macOS (and warns if it's not Apple Silicon)
+2. Checks that Homebrew is installed, and prints the install command if it isn't
+3. Installs `whisper-cpp` and `ffmpeg` via brew, skipping any that are already available
+4. Creates `podscribe.conf` from `podscribe.conf.example` (an existing config is never overwritten)
+5. Shows the configured model and pauses so you can change it. Press Enter to continue, or `o` to open the config in `$EDITOR` (or your default text editor)
+6. Downloads the model (~1.6 GB for the default) into `models/`, unless it's already there
+7. Makes `podscribe.sh` executable
+
+You can run `./install.sh` again at any time, e.g. after changing `MODEL_NAME`, to download the new model. Steps that are already done are skipped.
+
+<details>
+<summary>Manual installation</summary>
+
+```bash
+brew install whisper-cpp ffmpeg
 chmod +x podscribe.sh
 ```
 
-On the first run, the model (~1.6 GB) is downloaded to `models/ggml-large-v3-turbo.bin` inside the script directory.
+The model is downloaded automatically the first time you run `podscribe.sh`.
+</details>
 
 ## Usage
 
@@ -84,7 +106,7 @@ A `prompt.txt` per show is useful for recurring hosts, show names and regional t
 
 All settings are optional. Without a config file, podscribe uses the built-in defaults shown below.
 
-To customize, copy the example file next to the script and edit it:
+`./install.sh` creates `podscribe.conf` for you. To create it by hand, copy the example file:
 
 ```bash
 cp podscribe.conf.example podscribe.conf
@@ -100,7 +122,7 @@ The file is plain bash (`KEY="value"`, no spaces around `=`). Every value is che
 
 | Setting | Default | Description |
 | --- | --- | --- |
-| `MODEL_NAME` | `ggml-large-v3-turbo.bin` | Whisper model file. E.g. `ggml-large-v3.bin` (slower, slightly more accurate) or `ggml-small.bin` (faster) |
+| `MODEL_NAME` | `ggml-large-v3-turbo.bin` | whisper.cpp model file. E.g. `ggml-large-v3.bin` (slower, slightly more accurate) or `ggml-small.bin` (faster). See the [full list](https://huggingface.co/ggerganov/whisper.cpp/tree/main) |
 | `MODEL_URL` | `https://huggingface.co/ggerganov/whisper.cpp/resolve/main` | Base URL for downloading the model. The model is fetched from `${MODEL_URL}/${MODEL_NAME}` |
 | `MODELS_DIR` | `models` | Where models are stored. Relative paths are resolved against the script directory |
 | `LANGUAGE` | `de` | Spoken language code (`de`, `en`, `fr`, …) or `auto` |
@@ -132,3 +154,14 @@ If you add a format to `OUTPUT_FORMATS` later, re-running the script only create
 7. Deletes the temporary WAV (unless `KEEP_WAV="true"`)
 
 Transcripts are only moved into place once whisper finishes successfully, so a cancelled run never leaves a partial file that would get skipped next time.
+
+### Files
+
+| File | Purpose |
+| --- | --- |
+| `podscribe.sh` | The transcription tool |
+| `install.sh` | Installer (dependencies, config, model) |
+| `lib.sh` | Shared code used by both scripts: config loading and validation, model download |
+| `podscribe.conf.example` | Documented config with all defaults |
+| `podscribe.conf` | Your local config (gitignored) |
+| `models/` | Downloaded whisper models (gitignored) |

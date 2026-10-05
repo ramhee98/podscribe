@@ -1,0 +1,166 @@
+# shellcheck shell=bash
+#
+# Shared helpers for podscribe.sh and install.sh. Source this file; don't run it.
+#
+# Provides: output helpers, config loading/validation, model download.
+
+# Directory containing podscribe (this file lives next to the scripts).
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+DEFAULT_CONFIG="${SCRIPT_DIR}/podscribe.conf"
+EXAMPLE_CONFIG="${SCRIPT_DIR}/podscribe.conf.example"
+
+# --- Output -------------------------------------------------------------------
+
+if [[ -t 1 ]]; then
+    C_BLUE=$'\033[1;34m' C_GREEN=$'\033[1;32m' C_YELLOW=$'\033[1;33m' C_RED=$'\033[1;31m'
+    C_BOLD=$'\033[1m' C_OFF=$'\033[0m'
+else
+    C_BLUE="" C_GREEN="" C_YELLOW="" C_RED="" C_BOLD="" C_OFF=""
+fi
+
+info()  { printf '%s==>%s %s\n' "$C_BLUE" "$C_OFF" "$*"; }
+ok()    { printf '%s✓%s %s\n' "$C_GREEN" "$C_OFF" "$*"; }
+warn()  { printf '%s!%s %s\n' "$C_YELLOW" "$C_OFF" "$*" >&2; }
+die()   { printf '%sError:%s %s\n' "$C_RED" "$C_OFF" "$*" >&2; exit 1; }
+
+# --- Config -------------------------------------------------------------------
+
+# Built-in defaults. Keep in sync with podscribe.conf.example.
+config_defaults() {
+    MODEL_NAME="ggml-large-v3-turbo.bin"
+    MODEL_URL="https://huggingface.co/ggerganov/whisper.cpp/resolve/main"
+    MODELS_DIR="models"
+    LANGUAGE="de"
+    DEFAULT_PROMPT=""
+    MODE="newest"
+    OUTPUT_FORMATS="txt"
+    THREADS=""
+    OVERWRITE="false"
+    KEEP_WAV="false"
+}
+
+# load_config [path]
+# Resets to built-in defaults, then sources the given config file, or
+# podscribe.conf next to the scripts if no path is given and it exists.
+# Sets CONFIG_FILE to the file that was loaded (empty if none).
+load_config() {
+    CONFIG_FILE="${1:-}"
+    config_defaults
+
+    if [[ -n "$CONFIG_FILE" ]]; then
+        [[ -f "$CONFIG_FILE" ]] || die "Config file not found: $CONFIG_FILE"
+    elif [[ -f "$DEFAULT_CONFIG" ]]; then
+        CONFIG_FILE="$DEFAULT_CONFIG"
+    else
+        return 0
+    fi
+
+    bash -n "$CONFIG_FILE" 2>/dev/null || die "Syntax error in config file: $CONFIG_FILE
+$(bash -n "$CONFIG_FILE" 2>&1 || true)"
+    # shellcheck source=podscribe.conf.example
+    source "$CONFIG_FILE"
+}
+
+# Map an output format to its whisper-cli flag.
+format_flag() {
+    case "$1" in
+        txt)  echo "-otxt" ;;
+        srt)  echo "-osrt" ;;
+        vtt)  echo "-ovtt" ;;
+        lrc)  echo "-olrc" ;;
+        csv)  echo "-ocsv" ;;
+        json) echo "-oj" ;;
+        *)    return 1 ;;
+    esac
+}
+
+common_models() {
+    cat <<EOF
+Common whisper.cpp models:
+  ggml-tiny.bin            ggml-tiny.en.bin         (~75 MB, fastest)
+  ggml-base.bin            ggml-base.en.bin         (~142 MB)
+  ggml-small.bin           ggml-small.en.bin        (~466 MB)
+  ggml-medium.bin          ggml-medium.en.bin       (~1.5 GB)
+  ggml-large-v3.bin                                 (~3.1 GB, most accurate)
+  ggml-large-v3-turbo.bin                           (~1.6 GB, default)
+  ggml-large-v3-turbo-q5_0.bin                      (~550 MB, quantized turbo)
+The .en models are English-only. Full list:
+  https://huggingface.co/ggerganov/whisper.cpp/tree/main
+EOF
+}
+
+cfg_err() {
+    die "Invalid setting $1=\"$2\" ($3)${CONFIG_FILE:+
+Check $CONFIG_FILE}"
+}
+
+# Validates all settings and derives:
+#   FORMATS     array of output formats
+#   THREADS     filled in with the CPU core count if empty
+#   MODELS_DIR  made absolute (relative paths are relative to SCRIPT_DIR)
+#   MODEL_PATH  full path of the model file
+validate_config() {
+    if [[ -z "$MODEL_NAME" || "$MODEL_NAME" == */* || "$MODEL_NAME" != ggml-*.bin ]]; then
+        die "Invalid setting MODEL_NAME=\"$MODEL_NAME\" (expected a whisper.cpp model file name)${CONFIG_FILE:+
+Check $CONFIG_FILE}
+
+$(common_models)"
+    fi
+    [[ "$MODEL_URL" =~ ^https?:// ]] \
+        || cfg_err MODEL_URL "$MODEL_URL" "expected an http(s) URL"
+    [[ -n "$MODELS_DIR" ]] \
+        || cfg_err MODELS_DIR "$MODELS_DIR" "must not be empty"
+    [[ "$LANGUAGE" =~ ^([a-z]{2,3}|auto)$ ]] \
+        || cfg_err LANGUAGE "$LANGUAGE" "expected a language code like de or en, or auto"
+    [[ "$MODE" == "newest" || "$MODE" == "all" ]] \
+        || cfg_err MODE "$MODE" "expected newest or all"
+    [[ -z "$THREADS" || "$THREADS" =~ ^[1-9][0-9]*$ ]] \
+        || cfg_err THREADS "$THREADS" "expected a positive number, or empty for all cores"
+    [[ "$OVERWRITE" == "true" || "$OVERWRITE" == "false" ]] \
+        || cfg_err OVERWRITE "$OVERWRITE" "expected true or false"
+    [[ "$KEEP_WAV" == "true" || "$KEEP_WAV" == "false" ]] \
+        || cfg_err KEEP_WAV "$KEEP_WAV" "expected true or false"
+
+    FORMATS=()
+    local fmt
+    for fmt in ${OUTPUT_FORMATS//,/ }; do
+        format_flag "$fmt" >/dev/null \
+            || cfg_err OUTPUT_FORMATS "$OUTPUT_FORMATS" "unknown format '$fmt', supported: txt srt vtt lrc csv json"
+        FORMATS+=("$fmt")
+    done
+    [[ ${#FORMATS[@]} -gt 0 ]] \
+        || cfg_err OUTPUT_FORMATS "$OUTPUT_FORMATS" "list at least one format, e.g. txt"
+
+    [[ -n "$THREADS" ]] || THREADS="$(sysctl -n hw.ncpu)"
+    [[ "$MODELS_DIR" == /* ]] || MODELS_DIR="${SCRIPT_DIR}/${MODELS_DIR}"
+    MODEL_PATH="${MODELS_DIR}/${MODEL_NAME}"
+}
+
+# --- Model --------------------------------------------------------------------
+
+# Downloads MODEL_NAME into MODELS_DIR unless it's already there.
+# Requires validate_config to have run.
+download_model() {
+    if [[ -f "$MODEL_PATH" ]]; then
+        ok "Model ${MODEL_NAME} already present in ${MODELS_DIR}"
+        return 0
+    fi
+
+    command -v curl >/dev/null 2>&1 || die "curl is required to download the model"
+
+    local src="${MODEL_URL%/}/${MODEL_NAME}"
+    local part="${MODEL_PATH}.part"
+    info "Downloading ${MODEL_NAME} to ${MODELS_DIR}"
+    mkdir -p "$MODELS_DIR"
+
+    # Download to a temp file so an interrupted download never looks complete.
+    if ! curl -L --fail --progress-bar -o "$part" "$src"; then
+        rm -f "$part"
+        die "Model download failed: $src
+Check that MODEL_NAME is spelled correctly.
+
+$(common_models)"
+    fi
+    mv "$part" "$MODEL_PATH"
+    ok "Model downloaded"
+}

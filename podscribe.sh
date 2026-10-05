@@ -6,25 +6,16 @@
 
 set -euo pipefail
 
-if [[ -t 1 ]]; then
-    C_BLUE=$'\033[1;34m' C_GREEN=$'\033[1;32m' C_YELLOW=$'\033[1;33m' C_RED=$'\033[1;31m' C_OFF=$'\033[0m'
-else
-    C_BLUE="" C_GREEN="" C_YELLOW="" C_RED="" C_OFF=""
-fi
-
-info()  { printf '%s==>%s %s\n' "$C_BLUE" "$C_OFF" "$*"; }
-ok()    { printf '%s✓%s %s\n' "$C_GREEN" "$C_OFF" "$*"; }
-warn()  { printf '%s!%s %s\n' "$C_YELLOW" "$C_OFF" "$*" >&2; }
-die()   { printf '%sError:%s %s\n' "$C_RED" "$C_OFF" "$*" >&2; exit 1; }
-
-# Resolve the real script directory, following symlinks (e.g. from /usr/local/bin).
+# Resolve the real script directory, following symlinks (e.g. from /usr/local/bin),
+# so lib.sh is found next to the actual script.
 script_path="${BASH_SOURCE[0]}"
 while [[ -L "$script_path" ]]; do
     link="$(readlink "$script_path")"
     [[ "$link" == /* ]] || link="$(dirname "$script_path")/$link"
     script_path="$link"
 done
-SCRIPT_DIR="$(cd "$(dirname "$script_path")" && pwd)"
+# shellcheck source=lib.sh
+source "$(cd "$(dirname "$script_path")" && pwd)/lib.sh"
 
 usage() {
     cat <<EOF
@@ -44,19 +35,6 @@ Settings are read from ${SCRIPT_DIR}/podscribe.conf if it exists
 (see podscribe.conf.example). Command-line options override the config.
 EOF
 }
-
-# --- Built-in defaults (keep in sync with podscribe.conf.example) -------------
-
-MODEL_NAME="ggml-large-v3-turbo.bin"
-MODEL_URL="https://huggingface.co/ggerganov/whisper.cpp/resolve/main"
-MODELS_DIR="models"
-LANGUAGE="de"
-DEFAULT_PROMPT=""
-MODE="newest"
-OUTPUT_FORMATS="txt"
-THREADS=""
-OVERWRITE="false"
-KEEP_WAV="false"
 
 # --- Argument parsing ---------------------------------------------------------
 # CLI values are collected first and applied after the config file is loaded.
@@ -123,71 +101,14 @@ folder="${folder%/}"
 
 # --- Config -------------------------------------------------------------------
 
-if [[ -n "$config_file" ]]; then
-    [[ -f "$config_file" ]] || die "Config file not found: $config_file"
-elif [[ -f "${SCRIPT_DIR}/podscribe.conf" ]]; then
-    config_file="${SCRIPT_DIR}/podscribe.conf"
+load_config "$config_file"
+if [[ -n "$CONFIG_FILE" ]]; then
+    info "Using config $CONFIG_FILE"
 fi
-
-if [[ -n "$config_file" ]]; then
-    bash -n "$config_file" 2>/dev/null || die "Syntax error in config file: $config_file
-$(bash -n "$config_file" 2>&1 || true)"
-    # shellcheck source=podscribe.conf.example
-    source "$config_file"
-    info "Using config $config_file"
-fi
-
 if [[ -n "$cli_mode" ]]; then
     MODE="$cli_mode"
 fi
-
-# Map an output format to its whisper-cli flag and file extension.
-format_flag() {
-    case "$1" in
-        txt)  echo "-otxt" ;;
-        srt)  echo "-osrt" ;;
-        vtt)  echo "-ovtt" ;;
-        lrc)  echo "-olrc" ;;
-        csv)  echo "-ocsv" ;;
-        json) echo "-oj" ;;
-        *)    return 1 ;;
-    esac
-}
-
-is_bool() { [[ "$1" == "true" || "$1" == "false" ]]; }
-
-cfg_err() {
-    die "Invalid setting $1=\"$2\" ($3)${config_file:+
-Check $config_file}"
-}
-
-[[ -n "$MODEL_NAME" && "$MODEL_NAME" != */* && "$MODEL_NAME" == *.bin ]] \
-    || cfg_err MODEL_NAME "$MODEL_NAME" "expected a file name ending in .bin, e.g. ggml-large-v3-turbo.bin"
-[[ "$MODEL_URL" =~ ^https?:// ]] \
-    || cfg_err MODEL_URL "$MODEL_URL" "expected an http(s) URL"
-[[ -n "$MODELS_DIR" ]] \
-    || cfg_err MODELS_DIR "$MODELS_DIR" "must not be empty"
-[[ "$LANGUAGE" =~ ^([a-z]{2,3}|auto)$ ]] \
-    || cfg_err LANGUAGE "$LANGUAGE" "expected a language code like de or en, or auto"
-[[ "$MODE" == "newest" || "$MODE" == "all" ]] \
-    || cfg_err MODE "$MODE" "expected newest or all"
-[[ -z "$THREADS" || "$THREADS" =~ ^[1-9][0-9]*$ ]] \
-    || cfg_err THREADS "$THREADS" "expected a positive number, or empty for all cores"
-is_bool "$OVERWRITE" || cfg_err OVERWRITE "$OVERWRITE" "expected true or false"
-is_bool "$KEEP_WAV"  || cfg_err KEEP_WAV "$KEEP_WAV" "expected true or false"
-
-formats=()
-for fmt in ${OUTPUT_FORMATS//,/ }; do
-    format_flag "$fmt" >/dev/null \
-        || cfg_err OUTPUT_FORMATS "$OUTPUT_FORMATS" "unknown format '$fmt', supported: txt srt vtt lrc csv json"
-    formats+=("$fmt")
-done
-[[ ${#formats[@]} -gt 0 ]] \
-    || cfg_err OUTPUT_FORMATS "$OUTPUT_FORMATS" "list at least one format, e.g. txt"
-
-[[ -n "$THREADS" ]] || THREADS="$(sysctl -n hw.ncpu)"
-[[ "$MODELS_DIR" == /* ]] || MODELS_DIR="${SCRIPT_DIR}/${MODELS_DIR}"
-MODEL_PATH="${MODELS_DIR}/${MODEL_NAME}"
+validate_config
 
 # --- Dependencies -------------------------------------------------------------
 
@@ -200,7 +121,8 @@ if [[ ${#missing[@]} -gt 0 ]]; then
     die "Missing dependencies. Install with:
 
     brew install ${missing[*]}
-"
+
+or run ./install.sh"
 fi
 
 # --- Prompt -------------------------------------------------------------------
@@ -242,16 +164,8 @@ fi
 # --- Model --------------------------------------------------------------------
 
 if [[ ! -f "$MODEL_PATH" ]]; then
-    model_src="${MODEL_URL%/}/${MODEL_NAME}"
-    info "Model not found, downloading ${MODEL_NAME} to ${MODELS_DIR}"
-    mkdir -p "$MODELS_DIR"
-    # Download to a temp file so an interrupted download never looks complete.
-    if ! curl -L --fail --progress-bar -o "${MODEL_PATH}.part" "$model_src"; then
-        rm -f "${MODEL_PATH}.part"
-        die "Model download failed: $model_src"
-    fi
-    mv "${MODEL_PATH}.part" "$MODEL_PATH"
-    ok "Model downloaded"
+    info "Model ${MODEL_NAME} not found"
+    download_model
 fi
 
 # --- Transcription ------------------------------------------------------------
@@ -277,7 +191,7 @@ for mp3 in "${mp3s[@]}"; do
 
     if [[ "$OVERWRITE" == false ]]; then
         all_exist=true
-        for fmt in "${formats[@]}"; do
+        for fmt in "${FORMATS[@]}"; do
             [[ -f "${base}.${fmt}" ]] || all_exist=false
         done
         if [[ "$all_exist" == true ]]; then
@@ -303,7 +217,7 @@ for mp3 in "${mp3s[@]}"; do
 
     info "Transcribing with $THREADS threads (this may take a while)"
     whisper_args=(-m "$MODEL_PATH" -l "$LANGUAGE" -t "$THREADS" -f "$wav" -of "$out_base" -pp)
-    for fmt in "${formats[@]}"; do
+    for fmt in "${FORMATS[@]}"; do
         whisper_args+=("$(format_flag "$fmt")")
     done
     if [[ -n "$prompt" ]]; then
@@ -329,7 +243,7 @@ for mp3 in "${mp3s[@]}"; do
     # Write into place only after success so partial runs never count as done.
     # Without OVERWRITE, transcripts that already exist are left untouched.
     saved=()
-    for fmt in "${formats[@]}"; do
+    for fmt in "${FORMATS[@]}"; do
         dest="${base}.${fmt}"
         if [[ "$OVERWRITE" == true || ! -f "$dest" ]]; then
             mv "${out_base}.${fmt}" "$dest"
