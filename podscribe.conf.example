@@ -91,3 +91,9 @@ GUEST_LABEL="Gast"
 
 # true = start each paragraph with its time, like "[00:01:23] Host: ...".
 SPEAKER_TIMESTAMPS="true"
+
+# true = start the transcript with the talk ratio, like
+#   Talk ratio: Host 38% (16:04, 2'310 words) / Gast 62% (26:13, 3'870 words)
+#   Silence/other: 01:12
+# The ratio is always shown in the summary after transcribing.
+RATIO_IN_TRANSCRIPT="false"

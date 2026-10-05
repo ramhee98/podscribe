@@ -370,17 +370,24 @@ print_timing() {
 
 # --- Speaker mode -------------------------------------------------------------
 
-# ask_tracks <label> <count> [numbers taken by the host]
+# ask_tracks <label> <count> [numbers already picked] [optional]
 # Reads one or more comma-separated track numbers ("3" or "3, 4") and prints
 # them space-separated, in the order entered. Asks again on invalid input.
+# With "optional", an empty answer is accepted and prints nothing.
 ask_tracks() {
-    local answer entries entry chosen error
+    local answer entries entry chosen error hint="1-$2, several parts: 3,4"
+    if [[ "${4:-}" == optional ]]; then
+        hint+=", Enter when done"
+    fi
     while true; do
-        read -r -p "$1 [1-$2, several parts: 3,4]: " answer || { echo >&2; die "Aborted"; }
+        read -r -p "$1 [$hint]: " answer || { echo >&2; die "Aborted"; }
         answer="$(printf '%s' "$answer" | tr -d '[:space:]')"
         chosen=" "
         error=""
-        if [[ -z "$answer" ]]; then
+        if [[ -z "$answer" && "${4:-}" == optional ]]; then
+            echo ""
+            return
+        elif [[ -z "$answer" ]]; then
             error="Enter at least one number"
         else
             IFS=, read -r -a entries <<< "$answer"
@@ -397,7 +404,7 @@ ask_tracks() {
                 elif [[ "$chosen" == *" $((10#$entry)) "* ]]; then
                     error="$((10#$entry)) is listed twice"
                 elif [[ " ${3:-} " == *" $((10#$entry)) "* ]]; then
-                    error="$((10#$entry)) is already a host track, pick the other speaker's files"
+                    error="$((10#$entry)) is already picked, choose other files"
                 else
                     chosen+="$((10#$entry)) "
                 fi
@@ -493,63 +500,38 @@ episode_name() {
     printf '%s\n' "$name"
 }
 
-transcribe_speakers() {
-    [[ -t 0 ]] || die "Speaker mode is interactive. Run it in a terminal so you can pick the tracks."
-
-    local tracks=() durations=() f n dir last_dir=""
-    while IFS= read -r -d '' f; do
-        tracks+=("$f")
-    done < <(find_audio '*.mp3' '*.wav' '*.m4a')
-    (( ${#tracks[@]} >= 2 )) \
-        || die "Speaker mode needs at least two audio files (mp3, wav, m4a) in $(search_scope), one per speaker"
-
-    echo
-    info "Audio files in $(search_scope)"
-    for n in "${!tracks[@]}"; do
-        # Blank line between folders, so tracks of the same episode stay together.
-        dir="$(dirname "${tracks[$n]}")"
-        if [[ -n "$last_dir" && "$dir" != "$last_dir" ]]; then
-            echo
-        fi
-        last_dir="$dir"
-        durations+=("$(audio_duration "${tracks[$n]}")")
-        printf '  %2d) %s  %s(%s)%s\n' $((n + 1)) "$(relpath "${tracks[$n]}")" \
-            "$C_BOLD" "$( [[ -n "${durations[$n]}" ]] && format_duration "${durations[$n]}" || echo "unknown length")" "$C_OFF"
+# select_files <numbers>: sets sel_files and sel_durs for space-separated track numbers
+select_files() {
+    local n
+    sel_files=()
+    sel_durs=()
+    for n in $1; do
+        sel_files+=("${tracks[$((n - 1))]}")
+        sel_durs+=("${durations[$((n - 1))]}")
     done
-    echo
+}
 
-    local host_ns guest_ns n
-    host_ns="$(ask_tracks "Host track" "${#tracks[@]}")"
-    guest_ns="$(ask_tracks "Guest track" "${#tracks[@]}" "$host_ns")"
-
-    local host_files=() guest_files=() host_durs=() guest_durs=()
-    for n in $host_ns; do
-        host_files+=("${tracks[$((n - 1))]}")
-        host_durs+=("${durations[$((n - 1))]}")
-    done
-    for n in $guest_ns; do
-        guest_files+=("${tracks[$((n - 1))]}")
-        guest_durs+=("${durations[$((n - 1))]}")
-    done
-    local host_dur guest_dur
-    host_dur="$(sum_durations "${host_durs[@]}")"
-    guest_dur="$(sum_durations "${guest_durs[@]}")"
-
-    # Show what will be joined, in order, with the combined length per speaker.
-    local role i label
-    echo
+# show_selection <host numbers> <guest numbers>: lists what will be joined per
+# speaker with the combined length, and warns about mismatches.
+show_selection() {
+    local role label total n i host_dur guest_dur host_count guest_count
     for role in host guest; do
         if [[ "$role" == host ]]; then
+            select_files "$1"
             label="Host: "
-            set -- "${host_files[@]}"
-            n="$host_dur"
+            host_dur="$(sum_durations "${sel_durs[@]}")"
+            host_count=${#sel_files[@]}
+            total="$host_dur"
         else
+            select_files "$2"
             label="Guest:"
-            set -- "${guest_files[@]}"
-            n="$guest_dur"
+            guest_dur="$(sum_durations "${sel_durs[@]}")"
+            guest_count=${#sel_files[@]}
+            total="$guest_dur"
         fi
-        info "$label $([[ $# -gt 1 ]] && echo "$# parts, ")$([[ -n "$n" ]] && format_duration "$n" || echo "unknown length")"
-        for i in "$@"; do
+        n=${#sel_files[@]}
+        info "$label $([[ $n -gt 1 ]] && echo "$n parts, ")$([[ -n "$total" ]] && format_duration "$total" || echo "unknown length")"
+        for i in "${sel_files[@]}"; do
             echo "        $(relpath "$i")"
         done
     done
@@ -563,10 +545,35 @@ transcribe_speakers() {
             warn "recordings of the same conversation, otherwise speakers get mixed up."
         fi
     fi
-    if [[ ${#host_files[@]} -ne ${#guest_files[@]} ]]; then
-        warn "Host has ${#host_files[@]} part(s) but guest has ${#guest_files[@]}. If the recording was"
+    if [[ $host_count -ne $guest_count ]]; then
+        warn "Host has $host_count part(s) but guest has $guest_count. If the recording was"
         warn "split, both speakers' parts should match, otherwise the tracks drift apart."
     fi
+}
+
+# print_ratio <host tracks, comma-separated> <merged.json>...: talk ratio summary lines
+print_ratio() {
+    local host_tracks="$1" ratio
+    shift
+    ratio="$(python3 "${SCRIPT_DIR}/diarize.py" ratio "$@" --host-tracks "$host_tracks" \
+        --host-label "$HOST_LABEL" --guest-label "$GUEST_LABEL")" || return 0
+    printf '    %-18s%s\n' "Talk ratio:" "$(sed -n 1p <<< "$ratio")"
+    printf '    %-18s%s\n' "Silence/other:" "$(sed -n 2p <<< "$ratio")"
+}
+
+# speaker_episode <number> <host numbers> <guest numbers>
+# Transcribes one episode. Runs in a subshell, so a failure (die) only ends this
+# episode. Results for the summary go to ${tmpdir}/episodes.tsv:
+#   done <tab> merged.json <tab> host track <tab> audio <tab> whisper <tab> total
+#   skipped
+speaker_episode() {
+    local k="$1" host_files=() guest_files=() host_dur guest_dur
+    select_files "$2"
+    host_files=("${sel_files[@]}")
+    host_dur="$(sum_durations "${sel_durs[@]}")"
+    select_files "$3"
+    guest_files=("${sel_files[@]}")
+    guest_dur="$(sum_durations "${sel_durs[@]}")"
 
     # The transcript is named after the first host file (and the first guest file, if
     # their names share a start) and goes next to them (or their closest shared folder),
@@ -582,12 +589,11 @@ transcribe_speakers() {
 
     if [[ -f "$out" && "$OVERWRITE" == false ]]; then
         ok "Transcript exists, skipping (set OVERWRITE=\"true\" to redo it)"
+        echo "skipped" >> "${tmpdir}/episodes.tsv"
         return 0
     fi
 
-    ensure_model
-
-    local start sum_whisper=0 t
+    local start sum_whisper=0 t role
     start="$(now)"
     for role in host guest; do
         if [[ "$role" == host ]]; then
@@ -607,12 +613,12 @@ transcribe_speakers() {
 
     echo
     info "Separating speakers (energy margin ${ENERGY_MARGIN_DB} dB)"
-    local detected
+    local detected merged="${tmpdir}/episode${k}.json"
     detected="$(python3 "${SCRIPT_DIR}/diarize.py" merge \
         --host-json "${tmpdir}/host.json" --host-audio "${tmpdir}/host.wav" \
         --guest-json "${tmpdir}/guest.json" --guest-audio "${tmpdir}/guest.wav" \
         --margin "$ENERGY_MARGIN_DB" --host-speaks "$HOST_SPEAKS" \
-        --out "${tmpdir}/merged.json")" || die "Speaker analysis failed"
+        --out "$merged")" || die "Speaker analysis failed"
     [[ -n "$detected" ]] || die "No speech found in either track"
     # Stop the clock while waiting for the user.
     local busy_time
@@ -635,9 +641,12 @@ transcribe_speakers() {
     fi
 
     start="$(now)"
-    python3 "${SCRIPT_DIR}/diarize.py" render "${tmpdir}/merged.json" \
-        --host-track "$host_track" --host-label "$HOST_LABEL" --guest-label "$GUEST_LABEL" \
-        --timestamps "$SPEAKER_TIMESTAMPS" --out "${tmpdir}/speakers.txt" \
+    local render_args=(--host-track "$host_track" --host-label "$HOST_LABEL" --guest-label "$GUEST_LABEL"
+                       --timestamps "$SPEAKER_TIMESTAMPS" --out "${tmpdir}/speakers.txt")
+    if [[ "$RATIO_IN_TRANSCRIPT" == true ]]; then
+        render_args+=(--ratio-header)
+    fi
+    python3 "${SCRIPT_DIR}/diarize.py" render "$merged" "${render_args[@]}" \
         || die "Writing the transcript failed"
 
     # KEEP_WAV keeps each speaker's combined track, named after its first file.
@@ -654,12 +663,129 @@ transcribe_speakers() {
     ok "Saved $(relpath "$out")"
 
     # Audio is the episode length (the longer track); whisper time covers both tracks.
-    local audio="$host_dur"
+    local audio="$host_dur" total
     if [[ -z "$audio" ]] || { [[ -n "$guest_dur" ]] && awk -v a="$guest_dur" -v b="$audio" 'BEGIN { exit !(a > b) }'; }; then
         audio="$guest_dur"
     fi
-    print_timing "$audio" "$sum_whisper" "$(add_seconds "$busy_time" "$(elapsed_since "$start")")" \
+    total="$(add_seconds "$busy_time" "$(elapsed_since "$start")")"
+    print_timing "$audio" "$sum_whisper" "$total" \
         " (2 speakers, $((${#host_files[@]} + ${#guest_files[@]})) files)" "incl. conversion and speaker separation"
+    print_ratio "$host_track" "$merged"
+
+    printf 'done\t%s\t%s\t%s\t%s\t%s\n' "$merged" "$host_track" "$audio" "$sum_whisper" "$total" \
+        >> "${tmpdir}/episodes.tsv"
+}
+
+transcribe_speakers() {
+    [[ -t 0 ]] || die "Speaker mode is interactive. Run it in a terminal so you can pick the tracks."
+
+    local f n dir last_dir=""
+    tracks=()
+    durations=()
+    while IFS= read -r -d '' f; do
+        tracks+=("$f")
+    done < <(find_audio '*.mp3' '*.wav' '*.m4a')
+    (( ${#tracks[@]} >= 2 )) \
+        || die "Speaker mode needs at least two audio files (mp3, wav, m4a) in $(search_scope), one per speaker"
+
+    echo
+    info "Audio files in $(search_scope)"
+    for n in "${!tracks[@]}"; do
+        # Blank line between folders, so tracks of the same episode stay together.
+        dir="$(dirname "${tracks[$n]}")"
+        if [[ -n "$last_dir" && "$dir" != "$last_dir" ]]; then
+            echo
+        fi
+        last_dir="$dir"
+        durations+=("$(audio_duration "${tracks[$n]}")")
+        printf '  %2d) %s  %s(%s)%s\n' $((n + 1)) "$(relpath "${tracks[$n]}")" \
+            "$C_BOLD" "$( [[ -n "${durations[$n]}" ]] && format_duration "${durations[$n]}" || echo "unknown length")" "$C_OFF"
+    done
+
+    # Pick all episodes first (one with MODE="newest", as many as wanted with
+    # --all), so the transcription can then run without further questions.
+    local ep_host=() ep_guest=() taken="" host_ns guest_ns optional="" k
+    if [[ "$MODE" == all ]]; then
+        echo
+        info "Pick the host and guest tracks of each episode. Leave the host empty when you're done."
+    fi
+    while true; do
+        k=$((${#ep_host[@]} + 1))
+        echo
+        if [[ "$MODE" == all ]]; then
+            info "Episode $k"
+        fi
+        host_ns="$(ask_tracks "Host track" "${#tracks[@]}" "$taken" "$optional")"
+        [[ -n "$host_ns" ]] || break
+        guest_ns="$(ask_tracks "Guest track" "${#tracks[@]}" "$taken $host_ns")"
+        echo
+        show_selection "$host_ns" "$guest_ns"
+        ep_host+=("$host_ns")
+        ep_guest+=("$guest_ns")
+        taken+=" $host_ns $guest_ns"
+        [[ "$MODE" == all ]] || break
+        # Stop asking once fewer than two files are left.
+        if (( ${#tracks[@]} - $(wc -w <<< "$taken") < 2 )); then
+            info "All files are assigned"
+            break
+        fi
+        optional="optional"
+    done
+
+    ensure_model
+
+    local total_eps=${#ep_host[@]}
+    : > "${tmpdir}/episodes.tsv"
+    for k in $(seq 1 "$total_eps"); do
+        echo
+        if (( total_eps > 1 )); then
+            info "${C_BOLD}Episode $k of $total_eps${C_OFF}"
+        fi
+        # Subshell: a failing episode (die) doesn't stop the remaining ones.
+        if ! ( speaker_episode "$k" "${ep_host[$((k - 1))]}" "${ep_guest[$((k - 1))]}" ); then
+            warn "Episode $k failed"
+            echo "failed" >> "${tmpdir}/episodes.tsv"
+        fi
+    done
+
+    # Combined summary over all episodes (only with more than one).
+    local status merged host_track audio whisper total
+    local done_n=0 skipped_n=0 failed_n=0 sum_audio=0 sum_whisper=0 sum_total=0 audio_known=true
+    local merged_files=() host_tracks=""
+    while IFS=$'\t' read -r status merged host_track audio whisper total; do
+        case "$status" in
+            skipped) skipped_n=$((skipped_n + 1)) ;;
+            failed)  failed_n=$((failed_n + 1)) ;;
+            done)
+                done_n=$((done_n + 1))
+                merged_files+=("$merged")
+                host_tracks+="${host_tracks:+,}$host_track"
+                sum_whisper="$(add_seconds "$sum_whisper" "$whisper")"
+                sum_total="$(add_seconds "$sum_total" "$total")"
+                if [[ -n "$audio" ]]; then
+                    sum_audio="$(add_seconds "$sum_audio" "$audio")"
+                else
+                    audio_known=false
+                fi
+                ;;
+        esac
+    done < "${tmpdir}/episodes.tsv"
+
+    if (( total_eps > 1 )); then
+        echo
+        info "Done: $done_n transcribed, $skipped_n skipped, $failed_n failed"
+        if (( done_n > 0 )); then
+            echo
+            info "Summary"
+            printf '    %-18s%s\n' "Episodes:" "$done_n"
+            if [[ "$audio_known" == false ]]; then
+                sum_audio=""
+            fi
+            print_timing "$sum_audio" "$sum_whisper" "$sum_total" "" "incl. conversion and speaker separation"
+            print_ratio "$host_tracks" "${merged_files[@]}"
+        fi
+    fi
+    (( failed_n == 0 ))
 }
 
 if [[ "$DIARIZE" == true ]]; then

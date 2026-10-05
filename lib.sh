@@ -47,6 +47,7 @@ config_defaults() {
     HOST_LABEL="Host"
     GUEST_LABEL="Gast"
     SPEAKER_TIMESTAMPS="true"
+    RATIO_IN_TRANSCRIPT="false"
 }
 
 # load_config [path]
@@ -152,6 +153,8 @@ $(common_models)"
         || cfg_err GUEST_LABEL "$GUEST_LABEL" "must differ from HOST_LABEL"
     [[ "$SPEAKER_TIMESTAMPS" == "true" || "$SPEAKER_TIMESTAMPS" == "false" ]] \
         || cfg_err SPEAKER_TIMESTAMPS "$SPEAKER_TIMESTAMPS" "expected true or false"
+    [[ "$RATIO_IN_TRANSCRIPT" == "true" || "$RATIO_IN_TRANSCRIPT" == "false" ]] \
+        || cfg_err RATIO_IN_TRANSCRIPT "$RATIO_IN_TRANSCRIPT" "expected true or false"
 
     FORMATS=()
     local fmt

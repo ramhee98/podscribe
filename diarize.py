@@ -23,7 +23,13 @@ Usage:
       "guest") to stdout.
 
   diarize.py render merged.json --host-track host --host-label Host \\
-                    --guest-label Gast --timestamps true --out episode.txt
+                    --guest-label Gast --timestamps true [--ratio-header] \\
+                    --out episode.txt
+
+  diarize.py ratio merged1.json [merged2.json ...] --host-tracks host,guest \\
+                   --host-label Host --guest-label Gast
+      Prints the talk ratio and the silence over all given episodes, one
+      per line.
 """
 
 import argparse
@@ -105,6 +111,7 @@ class Segment:
         self.other_s = 0.0        # seconds where the other track is clearly louder
         self.level_diff = 0.0     # whole-window level difference (dB), fallback only
         self.speech_start = start
+        self.speech_end = end
         self.dropped = None       # None, "bleed" or "duplicate"
 
     @property
@@ -142,6 +149,7 @@ def analyse(seg, own, other, own_min, other_min, margin):
     own_frames = other_frames = 0
     own_power = other_power = 0.0
     first_own = first_run = None
+    last_own = last_run_end = None
     run = 0
     for i in range(i0, i1):
         o = own[i] if i < len(own) else SILENCE_DB
@@ -149,12 +157,15 @@ def analyse(seg, own, other, own_min, other_min, margin):
         if o >= own_min and o - t >= margin:
             own_frames += 1
             run += 1
+            last_own = i + 1
             if first_own is None:
                 first_own = i
             # A single stray frame (e.g. tracks a few ms out of sync) shouldn't
             # move the start, so wait for a short run of own speech.
             if first_run is None and run >= MIN_RUN_FRAMES:
                 first_run = i - run + 1
+            if run >= MIN_RUN_FRAMES:
+                last_run_end = i + 1
         else:
             run = 0
             if t >= other_min and t - o >= margin:
@@ -164,10 +175,14 @@ def analyse(seg, own, other, own_min, other_min, margin):
     seg.own_s = own_frames / FPS
     seg.other_s = other_frames / FPS
     seg.level_diff = 10 * math.log10((own_power + 1e-30) / (other_power + 1e-30))
+    # Tighten the window to where this track actually speaks, so it doesn't
+    # include the other speaker's turn (used for timestamps and talk time).
     if first_run is not None:
         seg.speech_start = first_run / FPS
+        seg.speech_end = last_run_end / FPS
     elif first_own is not None:
         seg.speech_start = first_own / FPS
+        seg.speech_end = last_own / FPS
 
 
 def words(text):
@@ -209,6 +224,70 @@ def drop_duplicates(kept):
                 break
 
 
+# --- Talk ratio ----------------------------------------------------------------
+
+def union_seconds(intervals):
+    """Total length of a set of intervals, counting overlaps once."""
+    total = 0.0
+    cur_start = cur_end = None
+    for start, end in sorted(intervals):
+        if cur_end is None or start > cur_end:
+            if cur_end is not None:
+                total += cur_end - cur_start
+            cur_start, cur_end = start, end
+        else:
+            cur_end = max(cur_end, end)
+    if cur_end is not None:
+        total += cur_end - cur_start
+    return total
+
+
+def talk_stats(kept, duration):
+    """Speaking time and words per track from the kept segments, plus silence."""
+    stats = {"duration": round(duration, 3), "tracks": {}}
+    for track in TRACKS:
+        mine = [s for s in kept if s.track == track]
+        stats["tracks"][track] = {
+            "seconds": round(union_seconds([(s.speech_start, s.speech_end) for s in mine]), 3),
+            "words": sum(len(words(s.text)) for s in mine),
+        }
+    spoken = union_seconds([(s.speech_start, s.speech_end) for s in kept])
+    stats["silence"] = round(max(0.0, duration - spoken), 3)
+    return stats
+
+
+def format_duration(seconds):
+    """mm:ss, or hh:mm:ss from one hour on (same as format_duration in lib.sh)."""
+    t = int(seconds + 0.5)
+    if t >= 3600:
+        return "%02d:%02d:%02d" % (t // 3600, t % 3600 // 60, t % 60)
+    return "%02d:%02d" % (t // 60, t % 60)
+
+
+def thousands(n):
+    return "{:,}".format(n).replace(",", "'")
+
+
+def ratio_lines(episodes, host_label, guest_label):
+    """episodes: list of (stats, host_track). Returns (talk ratio, silence) texts."""
+    host_s = guest_s = silence = 0.0
+    host_w = guest_w = 0
+    for stats, host_track in episodes:
+        guest_track = "guest" if host_track == "host" else "host"
+        host_s += stats["tracks"][host_track]["seconds"]
+        guest_s += stats["tracks"][guest_track]["seconds"]
+        host_w += stats["tracks"][host_track]["words"]
+        guest_w += stats["tracks"][guest_track]["words"]
+        silence += stats["silence"]
+    talk = host_s + guest_s
+    host_pct = int(100 * host_s / talk + 0.5) if talk > 0 else 0
+    guest_pct = 100 - host_pct if talk > 0 else 0
+    ratio = "%s %d%% (%s, %s words) / %s %d%% (%s, %s words)" % (
+        host_label, host_pct, format_duration(host_s), thousands(host_w),
+        guest_label, guest_pct, format_duration(guest_s), thousands(guest_w))
+    return ratio, format_duration(silence)
+
+
 # --- Commands ------------------------------------------------------------------
 
 def cmd_merge(args):
@@ -240,6 +319,7 @@ def cmd_merge(args):
     drop_duplicates([s for s in segments if not s.dropped])
 
     kept = sorted((s for s in segments if not s.dropped), key=lambda s: s.speech_start)
+    duration = max(len(levels["host"]), len(levels["guest"])) / FPS
     if kept:
         speaker = kept[0] if args.host_speaks == "first" else kept[-1]
         detected = speaker.track
@@ -258,8 +338,9 @@ def cmd_merge(args):
     with open(args.out, "w", encoding="utf-8") as fh:
         json.dump({
             "detected_host": detected,
+            "stats": talk_stats(kept, duration),
             "segments": [{"track": s.track, "start": round(s.speech_start, 3),
-                          "end": round(s.end, 3), "text": s.text} for s in kept],
+                          "end": round(s.speech_end, 3), "text": s.text} for s in kept],
         }, fh, ensure_ascii=False, indent=1)
     print(detected)
 
@@ -271,7 +352,8 @@ def timestamp(seconds):
 
 def cmd_render(args):
     with open(args.merged, encoding="utf-8") as fh:
-        segments = json.load(fh)["segments"]
+        merged = json.load(fh)
+    segments = merged["segments"]
     labels = {
         args.host_track: args.host_label,
         "guest" if args.host_track == "host" else "host": args.guest_label,
@@ -290,8 +372,28 @@ def cmd_render(args):
         prefix = "[%s] " % timestamp(start) if args.timestamps == "true" else ""
         lines.append("%s%s: %s" % (prefix, labels[track], " ".join(texts)))
 
+    header = ""
+    if args.ratio_header:
+        ratio, silence = ratio_lines([(merged["stats"], args.host_track)], args.host_label, args.guest_label)
+        header = "Talk ratio: %s\nSilence/other: %s\n\n" % (ratio, silence)
+
     with open(args.out, "w", encoding="utf-8") as fh:
-        fh.write("\n\n".join(lines) + "\n")
+        fh.write(header + "\n\n".join(lines) + "\n")
+
+
+def cmd_ratio(args):
+    host_tracks = args.host_tracks.split(",")
+    if len(host_tracks) != len(args.merged):
+        sys.exit("diarize.py: --host-tracks needs one entry per file")
+    episodes = []
+    for path, host_track in zip(args.merged, host_tracks):
+        if host_track not in TRACKS:
+            sys.exit("diarize.py: invalid host track '%s'" % host_track)
+        with open(path, encoding="utf-8") as fh:
+            episodes.append((json.load(fh)["stats"], host_track))
+    ratio, silence = ratio_lines(episodes, args.host_label, args.guest_label)
+    print(ratio)
+    print(silence)
 
 
 def main():
@@ -315,8 +417,16 @@ def main():
     render.add_argument("--host-label", default="Host")
     render.add_argument("--guest-label", default="Gast")
     render.add_argument("--timestamps", choices=("true", "false"), default="true")
+    render.add_argument("--ratio-header", action="store_true", help="start with the talk ratio")
     render.add_argument("--out", required=True)
     render.set_defaults(func=cmd_render)
+
+    ratio = sub.add_parser("ratio", help="print the talk ratio over one or more episodes")
+    ratio.add_argument("merged", nargs="+")
+    ratio.add_argument("--host-tracks", required=True, help="comma-separated, one per file")
+    ratio.add_argument("--host-label", default="Host")
+    ratio.add_argument("--guest-label", default="Gast")
+    ratio.set_defaults(func=cmd_ratio)
 
     args = parser.parse_args()
     args.func(args)
