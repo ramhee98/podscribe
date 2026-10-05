@@ -114,13 +114,15 @@ validate_config
 
 missing=()
 command -v ffmpeg      >/dev/null 2>&1 || missing+=("ffmpeg")
+command -v ffprobe     >/dev/null 2>&1 || missing+=("ffmpeg")
 command -v whisper-cli >/dev/null 2>&1 || missing+=("whisper-cpp")
 command -v curl        >/dev/null 2>&1 || missing+=("curl")
+command -v perl        >/dev/null 2>&1 || missing+=("perl")
 
 if [[ ${#missing[@]} -gt 0 ]]; then
     die "Missing dependencies. Install with:
 
-    brew install ${missing[*]}
+    brew install $(printf '%s\n' "${missing[@]}" | sort -u | tr '\n' ' ')
 
 or run ./install.sh"
 fi
@@ -168,6 +170,30 @@ if [[ ! -f "$MODEL_PATH" ]]; then
     download_model
 fi
 
+# --- Timing -------------------------------------------------------------------
+
+# Audio duration in seconds, or empty if ffprobe can't read it.
+audio_duration() {
+    ffprobe -v error -show_entries format=duration \
+        -of default=noprint_wrappers=1:nokey=1 "$1" 2>/dev/null | grep -E '^[0-9.]+$' || true
+}
+
+# print_timing <audio seconds or empty> <whisper seconds> <total seconds>
+print_timing() {
+    local audio="$1" whisper="$2" total="$3"
+    if [[ -n "$audio" ]]; then
+        printf '    %-18s%s\n' "Audio:" "$(format_duration "$audio")"
+    else
+        printf '    %-18s%s\n' "Audio:" "unknown"
+    fi
+    printf '    %-18s%s (total %s incl. conversion)\n' "Transcribed:" \
+        "$(format_duration "$whisper")" "$(format_duration "$total")"
+    if [[ -n "$audio" ]]; then
+        printf '    %-18s%s\n' "Per audio minute:" "$(per_audio_minute "$whisper" "$audio")"
+        printf '    %-18s%s\n' "Speed:" "$(realtime_factor "$whisper" "$audio")"
+    fi
+}
+
 # --- Transcription ------------------------------------------------------------
 
 tmpdir="$(mktemp -d -t podscribe)"
@@ -180,6 +206,12 @@ done_count=0
 skipped=0
 failed=0
 i=0
+# Totals over successfully transcribed files only (skipped/failed don't count).
+# Audio-based averages use only files whose duration is known.
+sum_audio=0
+sum_whisper_known=0
+sum_whisper=0
+sum_total=0
 
 for mp3 in "${mp3s[@]}"; do
     i=$((i + 1))
@@ -206,6 +238,12 @@ for mp3 in "${mp3s[@]}"; do
     log="${tmpdir}/whisper.log"
     rm -f "${out_base}".*
 
+    file_start="$(now)"
+    duration="$(audio_duration "$mp3")"
+    if [[ -z "$duration" ]]; then
+        warn "Couldn't read the audio duration, speed stats will be skipped for this file"
+    fi
+
     info "Converting to 16 kHz mono wav"
     if ! ffmpeg -nostdin -hide_banner -loglevel error -y \
             -i "$mp3" -ar 16000 -ac 1 -c:a pcm_s16le "$wav"; then
@@ -224,7 +262,7 @@ for mp3 in "${mp3s[@]}"; do
         whisper_args+=(--prompt "$prompt")
     fi
 
-    start=$SECONDS
+    whisper_start="$(now)"
     # Segments go to stdout (live progress); model/debug noise goes to the log.
     if ! whisper-cli "${whisper_args[@]}" 2>"$log"; then
         warn "whisper-cli failed for $name. Last log lines:"
@@ -233,6 +271,7 @@ for mp3 in "${mp3s[@]}"; do
         rm -f "$wav"
         continue
     fi
+    whisper_time="$(elapsed_since "$whisper_start")"
 
     if [[ "$KEEP_WAV" == true ]]; then
         mv "$wav" "${base}.wav"
@@ -250,11 +289,30 @@ for mp3 in "${mp3s[@]}"; do
             saved+=("$(basename "$dest")")
         fi
     done
-    elapsed=$((SECONDS - start))
-    ok "Saved ${saved[*]} ($((elapsed / 60))m $((elapsed % 60))s)"
+    total_time="$(elapsed_since "$file_start")"
+    ok "Saved ${saved[*]}"
+    print_timing "$duration" "$whisper_time" "$total_time"
+
     done_count=$((done_count + 1))
+    sum_whisper="$(add_seconds "$sum_whisper" "$whisper_time")"
+    sum_total="$(add_seconds "$sum_total" "$total_time")"
+    if [[ -n "$duration" ]]; then
+        sum_audio="$(add_seconds "$sum_audio" "$duration")"
+        sum_whisper_known="$(add_seconds "$sum_whisper_known" "$whisper_time")"
+    fi
 done
 
 echo
 info "Done: $done_count transcribed, $skipped skipped, $failed failed"
+
+if [[ "$MODE" == "all" && $done_count -gt 0 ]]; then
+    echo
+    info "Summary"
+    printf '    %-18s%s\n' "Files:" "$done_count"
+    printf '    %-18s%s\n' "Audio:" "$(format_duration "$sum_audio")"
+    printf '    %-18s%s (total %s incl. conversion)\n' "Transcribed:" \
+        "$(format_duration "$sum_whisper")" "$(format_duration "$sum_total")"
+    printf '    %-18s%s\n' "Per audio minute:" "$(per_audio_minute "$sum_whisper_known" "$sum_audio")"
+    printf '    %-18s%s\n' "Speed:" "$(realtime_factor "$sum_whisper_known" "$sum_audio")"
+fi
 [[ $failed -eq 0 ]] || exit 1

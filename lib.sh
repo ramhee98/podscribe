@@ -164,3 +164,39 @@ $(common_models)"
     mv "$part" "$MODEL_PATH"
     ok "Model downloaded"
 }
+
+# --- Time ---------------------------------------------------------------------
+# Durations are passed around as seconds with decimals; awk does the float math.
+
+# Current time in seconds with millisecond precision (bash 3.2 has no EPOCHREALTIME).
+now() { perl -MTime::HiRes=time -e 'printf "%.3f\n", time'; }
+
+# elapsed_since <start>: seconds since a timestamp from now()
+elapsed_since() { awk -v s="$1" -v e="$(now)" 'BEGIN { printf "%.3f", e - s }'; }
+
+# add_seconds <a> <b>
+add_seconds() { awk -v a="$1" -v b="$2" 'BEGIN { printf "%.3f", a + b }'; }
+
+# format_duration <seconds>: mm:ss, or hh:mm:ss from one hour on
+format_duration() {
+    local t h m s
+    t="$(awk -v x="$1" 'BEGIN { printf "%d", x + 0.5 }')"
+    h=$((t / 3600))
+    m=$(((t % 3600) / 60))
+    s=$((t % 60))
+    if (( h > 0 )); then
+        printf '%02d:%02d:%02d\n' "$h" "$m" "$s"
+    else
+        printf '%02d:%02d\n' "$m" "$s"
+    fi
+}
+
+# per_audio_minute <processing seconds> <audio seconds>: processing seconds per audio minute
+per_audio_minute() {
+    awk -v p="$1" -v a="$2" 'BEGIN { if (a > 0) printf "%.1f s", p / (a / 60); else printf "n/a" }'
+}
+
+# realtime_factor <processing seconds> <audio seconds>: how many times faster than realtime
+realtime_factor() {
+    awk -v p="$1" -v a="$2" 'BEGIN { if (p > 0) printf "%.1fx realtime", a / p; else printf "n/a" }'
+}

@@ -152,6 +152,18 @@ If you add a format to `OUTPUT_FORMATS` later, re-running the script only create
 5. Converts each mp3 to a temporary 16 kHz mono WAV with ffmpeg
 6. Transcribes it with `whisper-cli` and saves `<episode>.<format>` for each output format
 7. Deletes the temporary WAV (unless `KEEP_WAV="true"`)
+8. Prints timing stats for the file, and a combined summary at the end in `--all` mode
+
+Example timing output:
+
+```
+    Audio:            42:17
+    Transcribed:      03:51 (total 04:02 incl. conversion)
+    Per audio minute: 5.5 s
+    Speed:            11.0x realtime
+```
+
+"Transcribed" is the whisper run alone. The total also includes the mp3 to WAV conversion. Skipped and failed files don't count toward the summary.
 
 Transcripts are only moved into place once whisper finishes successfully, so a cancelled run never leaves a partial file that would get skipped next time.
 
