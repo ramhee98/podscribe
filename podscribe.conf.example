@@ -61,10 +61,10 @@ DEFAULT_PROMPT=""
 # Override on the command line with --newest / --all.
 MODE="newest"
 
-# true = also search subfolders of the given folder. Same as --recursive.
-# Hidden folders and the models folder are always skipped. Transcripts are
-# saved next to each source file.
-RECURSIVE="false"
+# true = also search subfolders of the given folder. Override on the command
+# line with --recursive / --no-recursive. Hidden folders and the models folder
+# are always skipped. Where transcripts go is set by OUTPUT_LOCATION below.
+RECURSIVE="true"
 
 # How many folder levels below the given folder to search when RECURSIVE is
 # true. 1 = only direct subfolders, 0 = unlimited.
@@ -75,7 +75,7 @@ MAX_DEPTH="3"
 #   "base"   = all in the folder given on the command line, named after their
 #              subfolder path, e.g. season2/ep05.mp3 -> season2_ep05.txt
 # Override on the command line with --output source|base.
-OUTPUT_LOCATION="source"
+OUTPUT_LOCATION="base"
 
 # With OUTPUT_LOCATION="base": what replaces "/" between subfolder names in
 # transcript file names, e.g. "_" (season2_ep05.txt) or " - " (season2 - ep05.txt).
@@ -135,4 +135,4 @@ SPEAKER_TIMESTAMPS="true"
 #   Words: 6'180
 #   Speaking speed: 150 wpm
 # These are always shown in the summary after transcribing.
-RATIO_IN_TRANSCRIPT="false"
+RATIO_IN_TRANSCRIPT="true"

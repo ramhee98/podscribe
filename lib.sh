@@ -155,9 +155,9 @@ config_defaults() {
     LANGUAGE="de"
     DEFAULT_PROMPT=""
     MODE="newest"
-    RECURSIVE="false"
+    RECURSIVE="true"
     MAX_DEPTH="3"
-    OUTPUT_LOCATION="source"
+    OUTPUT_LOCATION="base"
     OUTPUT_SEPARATOR="_"
     OUTPUT_FORMATS="txt"
     AUDIO_EXTENSIONS="wav,m4a,flac,aac"
@@ -168,9 +168,9 @@ config_defaults() {
     ENERGY_MARGIN_DB="6"
     HOST_SPEAKS="first"
     HOST_LABEL="Host"
-    GUEST_LABEL="Gast"
+    GUEST_LABEL="Guest"
     SPEAKER_TIMESTAMPS="true"
-    RATIO_IN_TRANSCRIPT="false"
+    RATIO_IN_TRANSCRIPT="true"
 }
 
 # load_config [path]

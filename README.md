@@ -46,7 +46,7 @@ The model is downloaded automatically the first time you run `podscribe.sh`.
 ## Usage
 
 ```bash
-./podscribe.sh <folder> [--all | --newest] [--recursive] [--output source|base] [--speakers] [--prompt "names, places"] [--config <path>]
+./podscribe.sh <folder> [--all | --newest] [--recursive | --no-recursive] [--output source|base] [--speakers] [--prompt "names, places"] [--config <path>]
 ```
 
 | Option | Description |
@@ -54,8 +54,9 @@ The model is downloaded automatically the first time you run `podscribe.sh`.
 | `<folder>` | Folder containing `.mp3` files |
 | `--all` | Transcribe every mp3 in the folder |
 | `--newest` | Transcribe only the newest mp3 (the default, unless `MODE="all"` is set in the config) |
-| `--recursive` | Also search subfolders, see [below](#subfolders) |
-| `--output source\|base` | With `--recursive`: save transcripts next to each audio file (`source`) or all in `<folder>` (`base`). See [below](#where-transcripts-go) |
+| `--recursive` | Also search subfolders (the default), see [below](#subfolders) |
+| `--no-recursive` | Only search `<folder>` itself |
+| `--output source\|base` | With recursive search: save all transcripts in `<folder>` (`base`, the default) or next to each audio file (`source`). See [below](#where-transcripts-go) |
 | `--speakers` | Speaker mode, see [below](#speaker-mode) |
 | `--vad`, `--no-vad` | Turn voice activity detection on or off (default on), see [below](#voice-activity-detection-vad) |
 | `--prompt "TEXT"` | Initial prompt passed to whisper, to help it spell guest names and local terms correctly |
@@ -82,7 +83,7 @@ File to transcribe [1-3, several parts: 3,4, q to quit]: 2, 3
 - Enter one number, or several separated by commas to join a recording that was split into parts. Parts are joined in the order entered, like in speaker mode
 - `q` quits
 - The transcript is named after the (first) file and saved according to the usual rules, including `OUTPUT_LOCATION`
-- `--recursive` and `MAX_DEPTH` apply to the search
+- Subfolders are searched too (unless `--no-recursive`), up to `MAX_DEPTH` levels
 - When run without a terminal (e.g. from another script), podscribe prints the list and exits with code 2 instead of waiting for input. If there are no audio files at all, it exits with code 1
 
 ### Examples
@@ -105,10 +106,10 @@ Help whisper with names and places:
 ./podscribe.sh ~/Podcasts/MyShow --prompt "Anna Muster, Chur, Graubünden, Rhätische Bahn"
 ```
 
-Transcribe every new episode of all shows in a folder tree:
+Transcribe every new episode of all shows in a folder tree (subfolders are searched by default):
 
 ```bash
-./podscribe.sh ~/Podcasts --recursive --all
+./podscribe.sh ~/Podcasts --all
 ```
 
 Use a separate config, e.g. for an English show:
@@ -119,23 +120,23 @@ Use a separate config, e.g. for an English show:
 
 ### Subfolders
 
-By default only the given folder itself is searched. With `--recursive` (or `RECURSIVE="true"`), podscribe also searches its subfolders, up to `MAX_DEPTH` levels deep (default 3, `0` = unlimited):
+By default, podscribe searches the given folder and its subfolders, up to `MAX_DEPTH` levels deep (default 3, `0` = unlimited). Use `--no-recursive` (or `RECURSIVE="false"`) to only search the folder itself.
 
 - **newest** (default): transcribes the newest mp3 across all subfolders
-- **`--all`**: transcribes every mp3 found. Each transcript is saved next to its mp3. The summary at the end shows counts per folder
+- **`--all`**: transcribes every mp3 found. Transcripts are saved as described [below](#where-transcripts-go). The summary at the end shows counts per folder
 - **`--speakers`**: lists the audio files by path relative to the given folder, grouped by subfolder, so the tracks of one episode are easy to spot
 
 Hidden folders and files (starting with `.`, including macOS `._` files) and the models folder are always skipped. Files are processed in order of folder, then name.
 
 #### Where transcripts go
 
-With `--recursive`, `OUTPUT_LOCATION` (or `--output`) decides where transcripts are saved:
+With recursive search (the default), `OUTPUT_LOCATION` (or `--output`) decides where transcripts are saved:
 
-- **`source`** (default): next to each audio file
-- **`base`**: all in the folder you passed to podscribe. To avoid name collisions, each file name starts with its subfolder path, with `/` replaced by `OUTPUT_SEPARATOR` (default `_`)
+- **`base`** (default): all in the folder you passed to podscribe. To avoid name collisions, each file name starts with its subfolder path, with `/` replaced by `OUTPUT_SEPARATOR` (default `_`)
+- **`source`**: next to each audio file
 
 ```
-~/Podcasts/MyShow/                   ./podscribe.sh ~/Podcasts/MyShow --recursive --all --output base
+~/Podcasts/MyShow/                   ./podscribe.sh ~/Podcasts/MyShow --all
 ├── intro.mp3                        → intro.txt
 ├── season2/
 │   ├── ep05.mp3                     → season2_ep05.txt
@@ -147,7 +148,7 @@ The "skip existing transcripts" check looks wherever transcripts are saved, so s
 
 Rarely, two different paths flatten to the same name (`a_b/c.mp3` and `a/b_c.mp3` both give `a_b_c.txt`). podscribe then refuses the second file instead of overwriting the first. Pick a different separator, e.g. `OUTPUT_SEPARATOR=" - "`.
 
-Without `--recursive`, transcripts are always saved next to the audio files and `OUTPUT_LOCATION` is ignored.
+With `--no-recursive`, transcripts are always saved next to the audio files and `OUTPUT_LOCATION` is ignored.
 
 ```
 ==> Summary
@@ -203,7 +204,7 @@ If each person was recorded on their own track (one mic per speaker), podscribe 
 ```
 [00:00:00] Host: Herzlich willkommen zu einer neuen Folge. Heute ist mein Gast Eddy aus Chur bei mir im Studio.
 
-[00:00:07] Gast: Danke für die Einladung, ich freue mich sehr, hier zu sein.
+[00:00:07] Guest: Danke für die Einladung, ich freue mich sehr, hier zu sein.
 
 [00:00:13] Host: Erzähl doch mal, wie bist du zur Rhätischen Bahn gekommen?
 ```
@@ -225,7 +226,7 @@ Host track [1-2, several parts: 3,4, q to quit]: 2
 Guest track [1-2, several parts: 3,4, q to quit]: 1
 ```
 
-Add `--recursive` to pick tracks from subfolders. The transcript is saved as `<name>.txt` next to the tracks (if they're in different folders, in the closest folder containing both), or in the given folder with `--output base`. `<name>` is based on the first host file: the start it shares with the first guest file (`Folge 12` above), or the folder name if the file names have nothing in common.
+Tracks in subfolders are listed too (unless `--no-recursive`). The transcript is saved as `<name>.txt` in the given folder, with the subfolder prefix described [above](#where-transcripts-go). With `--output source` it goes next to the tracks instead (if they're in different folders, in the closest folder containing both). `<name>` is based on the first host file: the start it shares with the first guest file (`Folge 12` above), or the folder name if the file names have nothing in common.
 
 How it works:
 
@@ -236,12 +237,12 @@ How it works:
 5. **Talk ratio and speaking speed:** the summary shows how long each speaker talked, how many words they said, and how fast they spoke:
 
    ```
-       Talk ratio:       Host 38% (16:04, 2'310 words) / Gast 62% (26:13, 3'870 words)
+       Talk ratio:       Host 38% (16:04, 2'310 words) / Guest 62% (26:13, 3'870 words)
        Silence/other:    01:12
-       Speaking speed:   Host 144 wpm / Gast 148 wpm, average 146 wpm
+       Speaking speed:   Host 144 wpm / Guest 148 wpm, average 146 wpm
    ```
 
-   Speaking time is measured from the sentences kept after crosstalk removal, counting only the moments where that speaker's track is actually loudest (pauses over 0.3 s don't count). Overlapping sentences of the same speaker are counted once. "Silence/other" is the time when neither speaker talks. Speaking speed is words per minute of each speaker's own speaking time; the average covers both speakers. Set `RATIO_IN_TRANSCRIPT="true"` to also put these lines at the top of the transcript
+   Speaking time is measured from the sentences kept after crosstalk removal, counting only the moments where that speaker's track is actually loudest (pauses over 0.3 s don't count). Overlapping sentences of the same speaker are counted once. "Silence/other" is the time when neither speaker talks. Speaking speed is words per minute of each speaker's own speaking time; the average covers both speakers. These lines are also put at the top of the transcript, unless `RATIO_IN_TRANSCRIPT="false"`
 
 Notes:
 
@@ -256,7 +257,7 @@ Notes:
 With `--all`, podscribe asks for one episode after another. Leave the host empty when you're done. All tracks are picked first (with the length checks shown right away), then all episodes are transcribed in a row:
 
 ```bash
-./podscribe.sh ~/Podcasts/MyShow --recursive --speakers --all
+./podscribe.sh ~/Podcasts/MyShow --speakers --all
 ```
 
 ```
@@ -335,9 +336,9 @@ The file is plain bash (`KEY="value"`, no spaces around `=`). Every value is che
 | `LANGUAGE` | `de` | Spoken language code (`de`, `en`, `fr`, …) or `auto` |
 | `DEFAULT_PROMPT` | *(empty)* | Prompt used when there's no `--prompt` and no `prompt.txt` |
 | `MODE` | `newest` | `newest` or `all`. Overridden by `--newest` / `--all` |
-| `RECURSIVE` | `false` | `true` also searches subfolders, like `--recursive` |
+| `RECURSIVE` | `true` | Also search subfolders. Overridden by `--recursive` / `--no-recursive` |
 | `MAX_DEPTH` | `3` | Folder levels below the given folder to search when `RECURSIVE` is on. `1` = direct subfolders only, `0` = unlimited |
-| `OUTPUT_LOCATION` | `source` | With `RECURSIVE`: `source` saves transcripts next to each audio file, `base` saves them all in the given folder. Overridden by `--output` |
+| `OUTPUT_LOCATION` | `base` | With `RECURSIVE`: `base` saves all transcripts in the given folder, `source` saves them next to each audio file. Overridden by `--output` |
 | `OUTPUT_SEPARATOR` | `_` | With `OUTPUT_LOCATION="base"`: replaces `/` in the subfolder prefix (`season2/ep05.mp3` → `season2_ep05.txt`) |
 | `AUDIO_EXTENSIONS` | `wav,m4a,flac,aac` | Other audio formats, offered when there are no mp3s and listed in speaker mode. `wav` and `m4a` are always included |
 | `OUTPUT_FORMATS` | `txt` | Formats to write, separated by spaces or commas: `txt` `srt` `vtt` `lrc` `csv` `json` |
@@ -348,9 +349,9 @@ The file is plain bash (`KEY="value"`, no spaces around `=`). Every value is che
 | `ENERGY_MARGIN_DB` | `6` | How much louder (dB) a track must be to count as the one speaking |
 | `HOST_SPEAKS` | `first` | Whether the host speaks `first` or `last` in the episode. Used to check your track selection |
 | `HOST_LABEL` | `Host` | Host name in speaker transcripts |
-| `GUEST_LABEL` | `Gast` | Guest name in speaker transcripts |
+| `GUEST_LABEL` | `Guest` | Guest name in speaker transcripts |
 | `SPEAKER_TIMESTAMPS` | `true` | Start each speaker paragraph with its time, like `[00:01:23]` |
-| `RATIO_IN_TRANSCRIPT` | `false` | `true` starts `.txt` transcripts with the speech stats: talk ratio, silence and speaking speed in speaker mode, speech time, words and speaking speed otherwise |
+| `RATIO_IN_TRANSCRIPT` | `true` | Starts `.txt` transcripts with the speech stats: talk ratio, silence and speaking speed in speaker mode, speech time, words and speaking speed otherwise |
 
 Example `podscribe.conf` that writes subtitles too and runs on 8 threads:
 
@@ -366,7 +367,7 @@ If you add a format to `OUTPUT_FORMATS` later, re-running the script only create
 
 1. Loads the config and checks every setting
 2. Checks that `ffmpeg` and `whisper-cli` are installed (and `python3` in speaker mode)
-3. Finds the mp3s (in subfolders too with `--recursive`) and picks the newest one (or all of them), skipping any whose transcripts already exist
+3. Finds the mp3s (in subfolders too, unless `--no-recursive`) and picks the newest one (or all of them), skipping any whose transcripts already exist
 4. Downloads the model if it's missing
 5. Converts each mp3 to a temporary 16 kHz mono WAV with ffmpeg
 6. Transcribes it with `whisper-cli` and saves `<episode>.<format>` for each output format
@@ -399,7 +400,7 @@ After each file, podscribe also shows how much speech it contains:
 - **Speaking speed** is words per minute of speech
 - With `--all`, every file shows its stats and the final summary adds them up
 - A talk ratio per speaker isn't possible from one mixed track. Use [speaker mode](#speaker-mode) with separate tracks for that
-- `RATIO_IN_TRANSCRIPT="true"` also puts the first three lines at the top of the `.txt` transcript (other formats stay unchanged)
+- The first three lines are also put at the top of the `.txt` transcript (other formats stay unchanged). Set `RATIO_IN_TRANSCRIPT="false"` to leave them out
 - The stats need `python3` (installed by `./install.sh`). Without it, transcription works as before and the stats are skipped
 
 Transcripts are only moved into place once whisper finishes successfully, so a cancelled run never leaves a partial file that would get skipped next time.

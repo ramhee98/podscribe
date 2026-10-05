@@ -23,11 +23,11 @@ Usage:
       "guest") to stdout.
 
   diarize.py render merged.json --host-track host --host-label Host \\
-                    --guest-label Gast --timestamps true [--ratio-header] \\
+                    --guest-label Guest --timestamps true [--ratio-header] \\
                     --out episode.txt
 
   diarize.py ratio merged1.json [merged2.json ...] --host-tracks host,guest \\
-                   --host-label Host --guest-label Gast
+                   --host-label Host --guest-label Guest
       Prints the talk ratio, the silence and the speaking speed over all
       given episodes, one per line.
 
@@ -486,7 +486,7 @@ def main():
     render.add_argument("merged")
     render.add_argument("--host-track", choices=TRACKS, default="host")
     render.add_argument("--host-label", default="Host")
-    render.add_argument("--guest-label", default="Gast")
+    render.add_argument("--guest-label", default="Guest")
     render.add_argument("--timestamps", choices=("true", "false"), default="true")
     render.add_argument("--ratio-header", action="store_true", help="start with the talk ratio")
     render.add_argument("--out", required=True)
@@ -496,7 +496,7 @@ def main():
     ratio.add_argument("merged", nargs="+")
     ratio.add_argument("--host-tracks", required=True, help="comma-separated, one per file")
     ratio.add_argument("--host-label", default="Host")
-    ratio.add_argument("--guest-label", default="Gast")
+    ratio.add_argument("--guest-label", default="Guest")
     ratio.set_defaults(func=cmd_ratio)
 
     speech = sub.add_parser("speech", help="speech stats for a single mixed track")

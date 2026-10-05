@@ -2,7 +2,7 @@
 #
 # podscribe - transcribe podcast episodes locally with whisper.cpp
 #
-# Usage: ./podscribe.sh <folder> [--all|--newest] [--recursive] [--output source|base] [--speakers]
+# Usage: ./podscribe.sh <folder> [--all|--newest] [--recursive|--no-recursive] [--output source|base] [--speakers]
 #                       [--vad|--no-vad] [--prompt "names, places"] [--config <path>]
 
 set -euo pipefail
@@ -28,9 +28,10 @@ Transcribes .mp3 files in <folder> locally using whisper.cpp.
 Options:
   --all              Transcribe every mp3 in the folder
   --newest           Transcribe only the newest mp3 (default)
-  --recursive        Also search subfolders (up to MAX_DEPTH levels)
-  --output WHERE     With --recursive: save transcripts next to each audio file
-                     ("source", default) or all in <folder> ("base")
+  --recursive        Also search subfolders, up to MAX_DEPTH levels (default)
+  --no-recursive     Only search <folder> itself
+  --output WHERE     With recursive search: save all transcripts in <folder>
+                     ("base", default) or next to each audio file ("source")
   --vad, --no-vad    Use voice activity detection (Silero) to skip silence
                      (default: on, see VAD in the config)
   --speakers         Speaker mode: pick one track per speaker (host, guest)
@@ -75,6 +76,10 @@ while [[ $# -gt 0 ]]; do
             ;;
         --recursive)
             cli_recursive="true"
+            shift
+            ;;
+        --no-recursive)
+            cli_recursive="false"
             shift
             ;;
         --vad)
@@ -166,7 +171,7 @@ validate_config
 # OUTPUT_LOCATION only matters with subfolders: without them, the folder is the source.
 if [[ "$RECURSIVE" == false ]]; then
     if [[ -n "$cli_output" ]]; then
-        warn "--output has no effect without --recursive"
+        warn "--output has no effect without recursive search (--no-recursive or RECURSIVE=\"false\")"
     fi
     OUTPUT_LOCATION="source"
 fi
