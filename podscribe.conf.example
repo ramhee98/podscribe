@@ -52,6 +52,11 @@ OUTPUT_LOCATION="source"
 # transcript file names, e.g. "_" (season2_ep05.txt) or " - " (season2 - ep05.txt).
 OUTPUT_SEPARATOR="_"
 
+# Other audio formats (besides mp3), separated by commas or spaces. They're
+# offered when a folder has no mp3s, and listed in speaker mode. wav and m4a
+# are always included.
+AUDIO_EXTENSIONS="wav,m4a,flac,aac"
+
 # Transcript formats to write next to each mp3, separated by spaces or commas.
 # Supported: txt srt vtt lrc csv json
 OUTPUT_FORMATS="txt"

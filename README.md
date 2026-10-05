@@ -62,6 +62,27 @@ The model is downloaded automatically the first time you run `podscribe.sh`.
 
 Episodes that already have a transcript are skipped, so you can safely re-run the script.
 
+### No mp3 files?
+
+If the folder has no mp3s, podscribe lists the other audio files it finds (wav, m4a and everything in `AUDIO_EXTENSIONS`) and lets you pick one, in the same format as speaker mode:
+
+```
+! No mp3 files found in ~/Recordings
+==> Other audio files:
+   1) Interview.flac  (42:17, 405.2 MB)
+
+   2) Studio/Teil 1.m4a  (25:02, 24.1 MB)
+   3) Studio/Teil 2.wav  (17:15, 99.4 MB)
+
+File to transcribe [1-3, several parts: 3,4, q to quit]: 2, 3
+```
+
+- Enter one number, or several separated by commas to join a recording that was split into parts. Parts are joined in the order entered, like in speaker mode
+- `q` quits
+- The transcript is named after the (first) file and saved according to the usual rules, including `OUTPUT_LOCATION`
+- `--recursive` and `MAX_DEPTH` apply to the search
+- When run without a terminal (e.g. from another script), podscribe prints the list and exits with code 2 instead of waiting for input. If there are no audio files at all, it exits with code 1
+
 ### Examples
 
 Transcribe the newest episode:
@@ -176,15 +197,15 @@ Put both tracks in a folder and run:
 ./podscribe.sh ~/Podcasts/MyShow/"Folge 12" --speakers
 ```
 
-podscribe lists the audio files in the folder (mp3, wav, m4a) with their lengths, and asks you to pick the host track and the guest track by number:
+podscribe lists the audio files in the folder (mp3, wav, m4a and `AUDIO_EXTENSIONS`) with their lengths and sizes, and asks you to pick the host track and the guest track by number (`q` quits):
 
 ```
 ==> Audio files in ~/Podcasts/MyShow/Folge 12
-   1) Folge 12 Gast.m4a  (42:17)
-   2) Folge 12 Host.wav  (42:17)
+   1) Folge 12 Gast.m4a  (42:17, 40.6 MB)
+   2) Folge 12 Host.wav  (42:17, 233.8 MB)
 
-Host track [1-2]: 2
-Guest track [1-2]: 1
+Host track [1-2, several parts: 3,4, q to quit]: 2
+Guest track [1-2, several parts: 3,4, q to quit]: 1
 ```
 
 Add `--recursive` to pick tracks from subfolders. The transcript is saved as `<name>.txt` next to the tracks (if they're in different folders, in the closest folder containing both), or in the given folder with `--output base`. `<name>` is based on the first host file: the start it shares with the first guest file (`Folge 12` above), or the folder name if the file names have nothing in common.
@@ -223,15 +244,15 @@ With `--all`, podscribe asks for one episode after another. Leave the host empty
 
 ```
 ==> Episode 1
-Host track [1-8, several parts: 3,4]: 2
-Guest track [1-8, several parts: 3,4]: 1
+Host track [1-8, several parts: 3,4, q to quit]: 2
+Guest track [1-8, several parts: 3,4, q to quit]: 1
 
 ==> Episode 2
-Host track [1-8, several parts: 3,4, Enter when done]: 6,5
-Guest track [1-8, several parts: 3,4]: 4,3
+Host track [1-8, several parts: 3,4, Enter when done, q to quit]: 6,5
+Guest track [1-8, several parts: 3,4, q to quit]: 4,3
 
 ==> Episode 3
-Host track [1-8, several parts: 3,4, Enter when done]:
+Host track [1-8, several parts: 3,4, Enter when done, q to quit]:
 ```
 
 Each episode gets its own timing, talk ratio and speaking speed. At the end, a summary combines all transcribed episodes. Its talk ratio and speaking speed add up the speaking time and words of all episodes, so longer episodes weigh more. If one episode fails (e.g. a broken file), the others still run. You may still be asked to swap host and guest along the way, if the host check fails for an episode.
@@ -242,13 +263,13 @@ If a recording was split into several files per speaker (e.g. by the recorder, o
 
 ```
 ==> Audio files in ~/Podcasts/MyShow/Folge 13
-   1) Folge 13 Gast Teil 1.m4a  (25:02)
-   2) Folge 13 Gast Teil 2.wav  (17:15)
-   3) Folge 13 Host Teil 1.mp3  (25:02)
-   4) Folge 13 Host Teil 2.wav  (17:15)
+   1) Folge 13 Gast Teil 1.m4a  (25:02, 24.1 MB)
+   2) Folge 13 Gast Teil 2.wav  (17:15, 99.4 MB)
+   3) Folge 13 Host Teil 1.mp3  (25:02, 24.0 MB)
+   4) Folge 13 Host Teil 2.wav  (17:15, 99.4 MB)
 
-Host track [1-4, several parts: 3,4]: 3, 4
-Guest track [1-4, several parts: 3,4]: 1, 2
+Host track [1-4, several parts: 3,4, q to quit]: 3, 4
+Guest track [1-4, several parts: 3,4, q to quit]: 1, 2
 
 ==> Host:  2 parts, 42:17
         Folge 13 Host Teil 1.mp3
@@ -294,6 +315,7 @@ The file is plain bash (`KEY="value"`, no spaces around `=`). Every value is che
 | `MAX_DEPTH` | `3` | Folder levels below the given folder to search when `RECURSIVE` is on. `1` = direct subfolders only, `0` = unlimited |
 | `OUTPUT_LOCATION` | `source` | With `RECURSIVE`: `source` saves transcripts next to each audio file, `base` saves them all in the given folder. Overridden by `--output` |
 | `OUTPUT_SEPARATOR` | `_` | With `OUTPUT_LOCATION="base"`: replaces `/` in the subfolder prefix (`season2/ep05.mp3` → `season2_ep05.txt`) |
+| `AUDIO_EXTENSIONS` | `wav,m4a,flac,aac` | Other audio formats, offered when there are no mp3s and listed in speaker mode. `wav` and `m4a` are always included |
 | `OUTPUT_FORMATS` | `txt` | Formats to write, separated by spaces or commas: `txt` `srt` `vtt` `lrc` `csv` `json` |
 | `THREADS` | *(empty = all CPU cores)* | Number of CPU threads whisper uses |
 | `OVERWRITE` | `false` | `false` skips episodes whose transcripts already exist in all `OUTPUT_FORMATS`. `true` re-transcribes them and replaces existing files |

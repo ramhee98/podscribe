@@ -374,17 +374,22 @@ print_timing() {
 # Reads one or more comma-separated track numbers ("3" or "3, 4") and prints
 # them space-separated, in the order entered. Asks again on invalid input.
 # With "optional", an empty answer is accepted and prints nothing.
+# "q" prints "q", so the caller can quit.
 ask_tracks() {
     local answer entries entry chosen error hint="1-$2, several parts: 3,4"
     if [[ "${4:-}" == optional ]]; then
         hint+=", Enter when done"
     fi
+    hint+=", q to quit"
     while true; do
         read -r -p "$1 [$hint]: " answer || { echo >&2; die "Aborted"; }
         answer="$(printf '%s' "$answer" | tr -d '[:space:]')"
         chosen=" "
         error=""
-        if [[ -z "$answer" && "${4:-}" == optional ]]; then
+        if [[ "$answer" == [qQ] ]]; then
+            echo "q"
+            return
+        elif [[ -z "$answer" && "${4:-}" == optional ]]; then
             echo ""
             return
         elif [[ -z "$answer" ]]; then
@@ -443,7 +448,8 @@ describe_parts() {
 # build_track <role> <file>...: converts each part to 16 kHz mono wav, then joins
 # them in the given order into <tmpdir>/<role>.wav, so timestamps run on across parts.
 build_track() {
-    local role="$1" k=0 part progress="" list="${tmpdir}/${role}_parts.txt"
+    local role="$1" k=0 part progress="" list
+    list="${tmpdir}/${role}_parts.txt"
     shift
     : > "$list"
     for part in "$@"; do
@@ -498,6 +504,47 @@ episode_name() {
         name="$(basename "$3")"
     fi
     printf '%s\n' "$name"
+}
+
+# collect_tracks <pattern>...: finds matching audio files (see find_audio) and
+# stores them with their durations in tracks/durations.
+collect_tracks() {
+    local f
+    tracks=()
+    durations=()
+    while IFS= read -r -d '' f; do
+        tracks+=("$f")
+        durations+=("$(audio_duration "$f")")
+    done < <(find_audio "$@")
+}
+
+# print_tracks: numbered list of tracks with relative path, length and size, with
+# a blank line between folders so files of the same episode stay together.
+print_tracks() {
+    local n dir last_dir="" length
+    for n in "${!tracks[@]}"; do
+        dir="$(dirname "${tracks[$n]}")"
+        if [[ -n "$last_dir" && "$dir" != "$last_dir" ]]; then
+            echo
+        fi
+        last_dir="$dir"
+        if [[ -n "${durations[$n]}" ]]; then
+            length="$(format_duration "${durations[$n]}")"
+        else
+            length="unknown length"
+        fi
+        printf '  %2d) %s  %s(%s, %s)%s\n' $((n + 1)) "$(relpath "${tracks[$n]}")" \
+            "$C_BOLD" "$length" "$(format_size "$(stat -f '%z' "${tracks[$n]}")")" "$C_OFF"
+    done
+}
+
+# Extensions of the given patterns, for messages ("*.wav" "*.m4a" -> "wav, m4a").
+pattern_names() {
+    local p names=""
+    for p in "$@"; do
+        names+="${names:+, }${p#\*.}"
+    done
+    echo "$names"
 }
 
 # select_files <numbers>: sets sel_files and sel_durs for space-separated track numbers
@@ -681,28 +728,13 @@ speaker_episode() {
 transcribe_speakers() {
     [[ -t 0 ]] || die "Speaker mode is interactive. Run it in a terminal so you can pick the tracks."
 
-    local f n dir last_dir=""
-    tracks=()
-    durations=()
-    while IFS= read -r -d '' f; do
-        tracks+=("$f")
-    done < <(find_audio '*.mp3' '*.wav' '*.m4a')
+    local patterns=("*.mp3" "${OTHER_AUDIO_PATTERNS[@]}")
+    collect_tracks "${patterns[@]}"
     (( ${#tracks[@]} >= 2 )) \
-        || die "Speaker mode needs at least two audio files (mp3, wav, m4a) in $(search_scope), one per speaker"
-
+        || die "Speaker mode needs at least two audio files ($(pattern_names "${patterns[@]}")) in $(search_scope), one per speaker"
     echo
     info "Audio files in $(search_scope)"
-    for n in "${!tracks[@]}"; do
-        # Blank line between folders, so tracks of the same episode stay together.
-        dir="$(dirname "${tracks[$n]}")"
-        if [[ -n "$last_dir" && "$dir" != "$last_dir" ]]; then
-            echo
-        fi
-        last_dir="$dir"
-        durations+=("$(audio_duration "${tracks[$n]}")")
-        printf '  %2d) %s  %s(%s)%s\n' $((n + 1)) "$(relpath "${tracks[$n]}")" \
-            "$C_BOLD" "$( [[ -n "${durations[$n]}" ]] && format_duration "${durations[$n]}" || echo "unknown length")" "$C_OFF"
-    done
+    print_tracks
 
     # Pick all episodes first (one with MODE="newest", as many as wanted with
     # --all), so the transcription can then run without further questions.
@@ -718,8 +750,10 @@ transcribe_speakers() {
             info "Episode $k"
         fi
         host_ns="$(ask_tracks "Host track" "${#tracks[@]}" "$taken" "$optional")"
+        [[ "$host_ns" != q ]] || { info "Quit"; exit 0; }
         [[ -n "$host_ns" ]] || break
         guest_ns="$(ask_tracks "Guest track" "${#tracks[@]}" "$taken $host_ns")"
+        [[ "$guest_ns" != q ]] || { info "Quit"; exit 0; }
         echo
         show_selection "$host_ns" "$guest_ns"
         ep_host+=("$host_ns")
@@ -802,7 +836,36 @@ while IFS= read -r -d '' f; do
     mp3s+=("$f")
 done < <(find_audio '*.mp3')
 
-[[ ${#mp3s[@]} -gt 0 ]] || die "No .mp3 files found in $(search_scope)"
+# No mp3s: offer the other audio files instead. Several numbers join parts into
+# one recording (picked_parts), which the loop below converts with build_track.
+picked_parts=()
+if [[ ${#mp3s[@]} -eq 0 ]]; then
+    echo
+    warn "No mp3 files found in $(search_scope)"
+    collect_tracks "${OTHER_AUDIO_PATTERNS[@]}"
+    if [[ ${#tracks[@]} -eq 0 ]]; then
+        hint="Add other extensions with AUDIO_EXTENSIONS"
+        if [[ "$RECURSIVE" == false ]]; then
+            hint+=", or use --recursive to search subfolders"
+        fi
+        die "No audio files found in $(search_scope) either (looked for mp3, $(pattern_names "${OTHER_AUDIO_PATTERNS[@]}")).
+${hint}."
+    fi
+    info "Other audio files:"
+    print_tracks
+    echo
+    if [[ ! -t 0 ]]; then
+        # Called from a script: don't wait for an answer that never comes.
+        printf '%sError:%s No mp3 files to transcribe. Run in a terminal to pick one of the files above.\n' \
+            "$C_RED" "$C_OFF" >&2
+        exit 2
+    fi
+    picked="$(ask_tracks "File to transcribe" "${#tracks[@]}")"
+    [[ "$picked" != q ]] || { info "Quit"; exit 0; }
+    select_files "$picked"
+    picked_parts=("${sel_files[@]}")
+    mp3s=("${picked_parts[0]}")
+fi
 
 if [[ "$MODE" == "newest" ]]; then
     newest=""
@@ -869,6 +932,10 @@ for mp3 in "${mp3s[@]}"; do
     name="$(relpath "$mp3")"
     base="$(output_path "$(dirname "$mp3")" "$(basename "${mp3%.*}")")"
 
+    if [[ ${#picked_parts[@]} -gt 1 ]]; then
+        name="$(describe_parts "${picked_parts[@]}")"
+    fi
+
     echo
     info "[$i/$total] $name"
 
@@ -901,14 +968,23 @@ for mp3 in "${mp3s[@]}"; do
     rm -f "${out_base}".*
 
     file_start="$(now)"
-    duration="$(audio_duration "$mp3")"
+    if [[ ${#picked_parts[@]} -gt 1 ]]; then
+        duration="$(sum_durations "${sel_durs[@]}")"
+    else
+        duration="$(audio_duration "$mp3")"
+    fi
     if [[ -z "$duration" ]]; then
         warn "Couldn't read the audio duration, speed stats will be skipped for this file"
     fi
 
     use_prompt_for "$mp3"
-    info "Converting to 16 kHz mono wav"
-    if ! convert_to_wav "$mp3" "$wav"; then
+    if [[ ${#picked_parts[@]} -gt 1 ]]; then
+        # Parts are converted and joined into $wav (${tmpdir}/audio.wav).
+        build_track audio "${picked_parts[@]}"
+    else
+        info "Converting to 16 kHz mono wav"
+    fi
+    if [[ ${#picked_parts[@]} -le 1 ]] && ! convert_to_wav "$mp3" "$wav"; then
         warn "ffmpeg failed for $name"
         failed=$((failed + 1))
         count_folder "$mp3" failed
@@ -933,7 +1009,11 @@ for mp3 in "${mp3s[@]}"; do
     whisper_time="$(elapsed_since "$whisper_start")"
 
     # The WAV is audio, not a transcript, so it always stays next to its source.
-    keep_or_remove_wav "$wav" "${mp3%.*}.wav"
+    if [[ ${#picked_parts[@]} -gt 1 ]]; then
+        keep_or_remove_wav "$wav" "${mp3%.*} (${#picked_parts[@]} parts).wav"
+    else
+        keep_or_remove_wav "$wav" "${mp3%.*}.wav"
+    fi
 
     # Write into place only after success so partial runs never count as done.
     # Without OVERWRITE, transcripts that already exist are left untouched.

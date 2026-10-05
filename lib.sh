@@ -38,6 +38,7 @@ config_defaults() {
     OUTPUT_LOCATION="source"
     OUTPUT_SEPARATOR="_"
     OUTPUT_FORMATS="txt"
+    AUDIO_EXTENSIONS="wav,m4a,flac,aac"
     THREADS=""
     OVERWRITE="false"
     KEEP_WAV="false"
@@ -166,6 +167,19 @@ $(common_models)"
     [[ ${#FORMATS[@]} -gt 0 ]] \
         || cfg_err OUTPUT_FORMATS "$OUTPUT_FORMATS" "list at least one format, e.g. txt"
 
+    # Other audio formats, for speaker mode and when a folder has no mp3s.
+    # wav and m4a are always included.
+    OTHER_AUDIO_PATTERNS=("*.wav" "*.m4a")
+    local ext
+    for ext in ${AUDIO_EXTENSIONS//,/ }; do
+        ext="$(printf '%s' "${ext#.}" | tr '[:upper:]' '[:lower:]')"
+        [[ "$ext" =~ ^[a-z0-9]+$ ]] \
+            || cfg_err AUDIO_EXTENSIONS "$AUDIO_EXTENSIONS" "'$ext' isn't a file extension, use e.g. wav,m4a,flac,aac"
+        if [[ "$ext" != mp3 && " ${OTHER_AUDIO_PATTERNS[*]} " != *" *.${ext} "* ]]; then
+            OTHER_AUDIO_PATTERNS+=("*.${ext}")
+        fi
+    done
+
     [[ -n "$THREADS" ]] || THREADS="$(sysctl -n hw.ncpu)"
     [[ "$MODELS_DIR" == /* ]] || MODELS_DIR="${SCRIPT_DIR}/${MODELS_DIR}"
     MODEL_PATH="${MODELS_DIR}/${MODEL_NAME}"
@@ -232,6 +246,16 @@ format_duration() {
     else
         printf '%02d:%02d\n' "$m" "$s"
     fi
+}
+
+# format_size <bytes>: human-readable size like 48.2 MB (decimal units, as in Finder)
+format_size() {
+    awk -v b="$1" 'BEGIN {
+        split("B KB MB GB TB", unit, " ")
+        i = 1
+        while (b >= 1000 && i < 5) { b /= 1000; i++ }
+        if (i == 1) printf "%d %s", b, unit[i]; else printf "%.1f %s", b, unit[i]
+    }'
 }
 
 # per_audio_minute <processing seconds> <audio seconds>: processing seconds per audio minute
