@@ -20,6 +20,35 @@ MODEL_URL="https://huggingface.co/ggerganov/whisper.cpp/resolve/main"
 # directory. Absolute paths and "$HOME/..." also work.
 MODELS_DIR="models"
 
+# --- Voice activity detection (VAD) ---------------------------------------------
+# whisper.cpp's built-in VAD (Silero) finds the parts with speech first, so whisper
+# skips silence, music beds and long pauses. That's faster and avoids made-up text
+# in quiet stretches. Timestamps stay on the original audio timeline.
+
+# true = use VAD. Override on the command line with --vad / --no-vad.
+VAD="true"
+
+# Silero VAD model file, stored in MODELS_DIR and downloaded if missing.
+VAD_MODEL="ggml-silero-v6.2.0.bin"
+
+# Base URL the VAD model is downloaded from: "${VAD_MODEL_URL}/${VAD_MODEL}".
+VAD_MODEL_URL="https://huggingface.co/ggml-org/whisper-vad/resolve/main"
+
+# How sure the model must be that a moment is speech (0-1). Lower it (e.g. 0.35)
+# if quiet speakers get cut off, raise it (e.g. 0.6) for noisy recordings.
+VAD_THRESHOLD="0.5"
+
+# Speech shorter than this (milliseconds) is ignored, e.g. clicks or coughs.
+VAD_MIN_SPEECH_MS="250"
+
+# Pauses shorter than this (milliseconds) don't split speech. 500 keeps breathing
+# pauses inside a sentence, so whisper gets whole sentences as context.
+VAD_MIN_SILENCE_MS="500"
+
+# Extra audio (milliseconds) kept before and after each speech part, so quiet
+# word beginnings and endings aren't clipped.
+VAD_SPEECH_PAD_MS="200"
+
 # Spoken language as a whisper language code (de, en, fr, ...), or "auto"
 # to detect it.
 LANGUAGE="de"

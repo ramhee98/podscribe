@@ -125,11 +125,16 @@ fi
 
 # --- 6. Model download --------------------------------------------------------
 
-step 6 "Downloading model"
+step 6 "Downloading models"
 # Re-load in case the file was edited in another window during the pause.
 load_config
 validate_config
 download_model
+if [[ "$VAD" == true ]]; then
+    download_vad_model
+else
+    info "VAD is off in the config, skipping the VAD model"
+fi
 
 # --- Done ---------------------------------------------------------------------
 

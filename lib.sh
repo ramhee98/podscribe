@@ -145,6 +145,13 @@ config_defaults() {
     MODEL_NAME="ggml-large-v3-turbo.bin"
     MODEL_URL="https://huggingface.co/ggerganov/whisper.cpp/resolve/main"
     MODELS_DIR="models"
+    VAD="true"
+    VAD_MODEL="ggml-silero-v6.2.0.bin"
+    VAD_MODEL_URL="https://huggingface.co/ggml-org/whisper-vad/resolve/main"
+    VAD_THRESHOLD="0.5"
+    VAD_MIN_SPEECH_MS="250"
+    VAD_MIN_SILENCE_MS="500"
+    VAD_SPEECH_PAD_MS="200"
     LANGUAGE="de"
     DEFAULT_PROMPT=""
     MODE="newest"
@@ -216,6 +223,16 @@ The .en models are English-only. Full list:
 EOF
 }
 
+common_vad_models() {
+    cat <<EOF
+Silero VAD models for whisper.cpp:
+  ggml-silero-v6.2.0.bin   (current)
+  ggml-silero-v5.1.2.bin
+Full list:
+  https://huggingface.co/ggml-org/whisper-vad/tree/main
+EOF
+}
+
 cfg_err() {
     die "Invalid setting $1=\"$2\" ($3)${CONFIG_FILE:+
 Check $CONFIG_FILE}"
@@ -235,6 +252,24 @@ $(common_models)"
     fi
     [[ "$MODEL_URL" =~ ^https?:// ]] \
         || cfg_err MODEL_URL "$MODEL_URL" "expected an http(s) URL"
+    [[ "$VAD" == "true" || "$VAD" == "false" ]] \
+        || cfg_err VAD "$VAD" "expected true or false"
+    if [[ -z "$VAD_MODEL" || "$VAD_MODEL" == */* || "$VAD_MODEL" != ggml-*.bin ]]; then
+        die "Invalid setting VAD_MODEL=\"$VAD_MODEL\" (expected a file name like ggml-silero-v6.2.0.bin)${CONFIG_FILE:+
+Check $CONFIG_FILE}
+
+$(common_vad_models)"
+    fi
+    [[ "$VAD_MODEL_URL" =~ ^https?:// ]] \
+        || cfg_err VAD_MODEL_URL "$VAD_MODEL_URL" "expected an http(s) URL"
+    [[ "$VAD_THRESHOLD" =~ ^(0(\.[0-9]+)?|1(\.0+)?)$ ]] \
+        || cfg_err VAD_THRESHOLD "$VAD_THRESHOLD" "expected a number between 0 and 1, like 0.5"
+    [[ "$VAD_MIN_SPEECH_MS" =~ ^[0-9]+$ ]] \
+        || cfg_err VAD_MIN_SPEECH_MS "$VAD_MIN_SPEECH_MS" "expected milliseconds, like 250"
+    [[ "$VAD_MIN_SILENCE_MS" =~ ^[0-9]+$ ]] \
+        || cfg_err VAD_MIN_SILENCE_MS "$VAD_MIN_SILENCE_MS" "expected milliseconds, like 500"
+    [[ "$VAD_SPEECH_PAD_MS" =~ ^[0-9]+$ ]] \
+        || cfg_err VAD_SPEECH_PAD_MS "$VAD_SPEECH_PAD_MS" "expected milliseconds, like 200"
     [[ -n "$MODELS_DIR" ]] \
         || cfg_err MODELS_DIR "$MODELS_DIR" "must not be empty"
     [[ "$LANGUAGE" =~ ^([a-z]{2,3}|auto)$ ]] \
@@ -298,6 +333,7 @@ $(common_models)"
     [[ -n "$THREADS" ]] || THREADS="$(sysctl -n hw.ncpu)"
     [[ "$MODELS_DIR" == /* ]] || MODELS_DIR="${SCRIPT_DIR}/${MODELS_DIR}"
     MODEL_PATH="${MODELS_DIR}/${MODEL_NAME}"
+    VAD_MODEL_PATH="${MODELS_DIR}/${VAD_MODEL}"
 }
 
 # --- Dependencies -------------------------------------------------------------
@@ -310,33 +346,45 @@ python_ok() {
 
 # --- Model --------------------------------------------------------------------
 
-# Downloads MODEL_NAME into MODELS_DIR unless it's already there.
-# Requires validate_config to have run.
-download_model() {
-    if [[ -f "$MODEL_PATH" ]]; then
-        ok "Model ${MODEL_NAME} already present in ${MODELS_DIR}"
+# fetch_model <file name> <base URL> <destination> <help text>
+# Downloads a model unless it's already there. The download goes to a temp file
+# (registered for cleanup), so an interrupted download never looks complete.
+fetch_model() {
+    local name="$1" url="$2" dest="$3" help="$4"
+    if [[ -f "$dest" ]]; then
+        ok "Model ${name} already present in $(dirname "$dest")"
         return 0
     fi
 
     command -v curl >/dev/null 2>&1 || die "curl is required to download the model"
 
-    local src="${MODEL_URL%/}/${MODEL_NAME}"
-    local part="${MODEL_PATH}.part"
-    info "Downloading ${MODEL_NAME} to ${MODELS_DIR}"
-    mkdir -p "$MODELS_DIR"
+    local src="${url%/}/${name}"
+    local part="${dest}.part"
+    info "Downloading ${name} to $(dirname "$dest")"
+    mkdir -p "$(dirname "$dest")"
 
-    # Download to a temp file so an interrupted download never looks complete.
-    # It's registered for cleanup, so an aborted download is removed too.
     register_temp "$part"
     if ! run_bg curl -L --fail --progress-bar -o "$part" "$src"; then
         rm -f "$part"
         die "Model download failed: $src
-Check that MODEL_NAME is spelled correctly.
+Check that the model name is spelled correctly.
 
-$(common_models)"
+$help"
     fi
-    mv "$part" "$MODEL_PATH"
+    mv "$part" "$dest"
     ok "Model downloaded"
+}
+
+# Downloads MODEL_NAME into MODELS_DIR unless it's already there.
+# Requires validate_config to have run.
+download_model() {
+    fetch_model "$MODEL_NAME" "$MODEL_URL" "$MODEL_PATH" "$(common_models)"
+}
+
+# Downloads the Silero VAD model (VAD_MODEL) into MODELS_DIR, if VAD is on.
+download_vad_model() {
+    [[ "$VAD" == true ]] || return 0
+    fetch_model "$VAD_MODEL" "$VAD_MODEL_URL" "$VAD_MODEL_PATH" "$(common_vad_models)"
 }
 
 # --- Time ---------------------------------------------------------------------

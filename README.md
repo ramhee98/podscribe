@@ -4,6 +4,7 @@ Transcribe podcast episodes locally on macOS (Apple Silicon) with [whisper.cpp](
 Audio never leaves your machine.
 
 - Model: `ggml-large-v3-turbo` (downloaded automatically on first run)
+- Voice activity detection (Silero VAD) skips silence and music beds
 - Language: German (`-l de`) by default
 - Output: transcript `<episode>.txt` next to each `<episode>.mp3` (optionally also `.srt`, `.vtt`, …)
 - Speaker mode: for episodes recorded with one track per speaker, writes one transcript labelled by speaker
@@ -26,7 +27,7 @@ The installer:
 3. Installs `whisper-cpp`, `ffmpeg` and `python` (for speaker mode) via brew, skipping any that are already available
 4. Creates `podscribe.conf` from `podscribe.conf.example` (an existing config is never overwritten)
 5. Shows the configured model and pauses so you can change it. Press Enter to continue, or `o` to open the config in `$EDITOR` (or your default text editor)
-6. Downloads the model (~1.6 GB for the default) into `models/`, unless it's already there
+6. Downloads the whisper model (~1.6 GB for the default) and the VAD model (under 1 MB) into `models/`, unless they're already there
 7. Makes `podscribe.sh` executable
 
 You can run `./install.sh` again at any time, e.g. after changing `MODEL_NAME`, to download the new model. Steps that are already done are skipped.
@@ -56,6 +57,7 @@ The model is downloaded automatically the first time you run `podscribe.sh`.
 | `--recursive` | Also search subfolders, see [below](#subfolders) |
 | `--output source\|base` | With `--recursive`: save transcripts next to each audio file (`source`) or all in `<folder>` (`base`). See [below](#where-transcripts-go) |
 | `--speakers` | Speaker mode, see [below](#speaker-mode) |
+| `--vad`, `--no-vad` | Turn voice activity detection on or off (default on), see [below](#voice-activity-detection-vad) |
 | `--prompt "TEXT"` | Initial prompt passed to whisper, to help it spell guest names and local terms correctly |
 | `--config <path>` | Use this config file instead of `podscribe.conf` |
 | `-h`, `--help` | Show help |
@@ -156,6 +158,21 @@ Without `--recursive`, transcripts are always saved next to the audio files and 
       Season 1             2 transcribed
       Season 2             1 transcribed, 1 failed
 ```
+
+### Voice activity detection (VAD)
+
+By default, whisper.cpp's built-in voice activity detection (the [Silero](https://github.com/snakers4/silero-vad) model) first finds the parts of the audio that contain speech, and whisper transcribes only those. That's faster, and it stops whisper from inventing text in long silences, intros or music beds. The summary shows whether VAD was used:
+
+```
+    VAD:              on (ggml-silero-v6.2.0.bin)
+```
+
+- Works in single-file mode and in speaker mode. Use `--no-vad` (or `VAD="false"`) to turn it off
+- The VAD model is stored in `models/` and downloaded automatically if it's missing (`./install.sh` fetches it too)
+- **Timestamps stay on the original timeline.** whisper.cpp maps the segment timestamps back after skipping silence. Tested with 10 s of silence before the first sentence: with VAD the first segment starts at 9.85 s (10.00 s minus the 200 ms padding), without VAD whisper puts it at 0.00. In speaker mode, two tracks with 10 s of leading silence came out with every turn exactly 10 s later than without the silence, so the speaker merge works as before. Note that whisper.cpp maps only segment timestamps back, not the timestamps of individual words (tokens). podscribe only uses segment timestamps
+- VAD doesn't replace the crosstalk filter in speaker mode. Each track still picks up the other speaker, and VAD hears that as speech too, so the loudness comparison runs as before
+- Speech stats (speaking time, words per minute) are still measured from the transcribed segments
+- If quiet speakers get cut off, lower `VAD_THRESHOLD` (e.g. to `0.35`). The other `VAD_*` settings are explained in `podscribe.conf.example`
 
 ### Prompts
 
@@ -308,6 +325,13 @@ The file is plain bash (`KEY="value"`, no spaces around `=`). Every value is che
 | `MODEL_NAME` | `ggml-large-v3-turbo.bin` | whisper.cpp model file. E.g. `ggml-large-v3.bin` (slower, slightly more accurate) or `ggml-small.bin` (faster). See the [full list](https://huggingface.co/ggerganov/whisper.cpp/tree/main) |
 | `MODEL_URL` | `https://huggingface.co/ggerganov/whisper.cpp/resolve/main` | Base URL for downloading the model. The model is fetched from `${MODEL_URL}/${MODEL_NAME}` |
 | `MODELS_DIR` | `models` | Where models are stored. Relative paths are resolved against the script directory |
+| `VAD` | `true` | Use voice activity detection. Overridden by `--vad` / `--no-vad` |
+| `VAD_MODEL` | `ggml-silero-v6.2.0.bin` | Silero VAD model file in `MODELS_DIR`, downloaded if missing |
+| `VAD_MODEL_URL` | `https://huggingface.co/ggml-org/whisper-vad/resolve/main` | Base URL for downloading the VAD model |
+| `VAD_THRESHOLD` | `0.5` | How sure the model must be that a moment is speech (0–1) |
+| `VAD_MIN_SPEECH_MS` | `250` | Speech shorter than this is ignored (clicks, coughs) |
+| `VAD_MIN_SILENCE_MS` | `500` | Pauses shorter than this don't split speech, so whisper gets whole sentences |
+| `VAD_SPEECH_PAD_MS` | `200` | Extra audio kept around each speech part, so word beginnings and endings aren't clipped |
 | `LANGUAGE` | `de` | Spoken language code (`de`, `en`, `fr`, …) or `auto` |
 | `DEFAULT_PROMPT` | *(empty)* | Prompt used when there's no `--prompt` and no `prompt.txt` |
 | `MODE` | `newest` | `newest` or `all`. Overridden by `--newest` / `--all` |
@@ -399,4 +423,4 @@ Press Ctrl+C at any time. podscribe stops whisper-cli/ffmpeg/curl right away (no
 | `diarize.py` | Speech analysis helper: crosstalk removal and merging for speaker mode, speech stats for all modes (Python standard library only) |
 | `podscribe.conf.example` | Documented config with all defaults |
 | `podscribe.conf` | Your local config (gitignored) |
-| `models/` | Downloaded whisper models (gitignored) |
+| `models/` | Downloaded whisper and VAD models (gitignored) |

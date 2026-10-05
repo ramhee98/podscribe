@@ -3,7 +3,7 @@
 # podscribe - transcribe podcast episodes locally with whisper.cpp
 #
 # Usage: ./podscribe.sh <folder> [--all|--newest] [--recursive] [--output source|base] [--speakers]
-#                       [--prompt "names, places"] [--config <path>]
+#                       [--vad|--no-vad] [--prompt "names, places"] [--config <path>]
 
 set -euo pipefail
 
@@ -31,6 +31,8 @@ Options:
   --recursive        Also search subfolders (up to MAX_DEPTH levels)
   --output WHERE     With --recursive: save transcripts next to each audio file
                      ("source", default) or all in <folder> ("base")
+  --vad, --no-vad    Use voice activity detection (Silero) to skip silence
+                     (default: on, see VAD in the config)
   --speakers         Speaker mode: pick one track per speaker (host, guest)
                      and get a single transcript labelled by speaker
   --prompt "TEXT"    Initial prompt for whisper (guest names, local terms).
@@ -52,6 +54,7 @@ cli_mode=""
 cli_diarize=""
 cli_recursive=""
 cli_output=""
+cli_vad=""
 cli_prompt=""
 cli_prompt_set=false
 config_file=""
@@ -72,6 +75,14 @@ while [[ $# -gt 0 ]]; do
             ;;
         --recursive)
             cli_recursive="true"
+            shift
+            ;;
+        --vad)
+            cli_vad="true"
+            shift
+            ;;
+        --no-vad)
+            cli_vad="false"
             shift
             ;;
         --output)
@@ -142,6 +153,9 @@ fi
 if [[ -n "$cli_recursive" ]]; then
     RECURSIVE="$cli_recursive"
 fi
+if [[ -n "$cli_vad" ]]; then
+    VAD="$cli_vad"
+fi
 if [[ -n "$cli_output" ]]; then
     [[ "$cli_output" == "source" || "$cli_output" == "base" ]] \
         || die "Invalid --output '$cli_output' (expected source or base)"
@@ -191,6 +205,10 @@ ensure_model() {
     if [[ ! -f "$MODEL_PATH" ]]; then
         info "Model ${MODEL_NAME} not found"
         download_model
+    fi
+    if [[ "$VAD" == true && ! -f "$VAD_MODEL_PATH" ]]; then
+        info "VAD model ${VAD_MODEL} not found"
+        download_vad_model
     fi
 }
 
@@ -326,12 +344,23 @@ convert_to_wav() {
 # run_whisper <wav> <output base> <output format flags...>
 # Segments go to stdout (live progress); model/debug noise goes to <output base>.log,
 # whose tail is shown if whisper fails.
+#
+# With VAD, whisper only transcribes the detected speech and maps the segment
+# timestamps back to the original timeline (tested: speech after 10 s of silence
+# starts at 10.02 s, not 0). Token timestamps are NOT mapped back, so only
+# segment timestamps may be used (diarize.py does).
 run_whisper() {
     local wav="$1" out_base="$2"
     shift 2
     local args=(-m "$MODEL_PATH" -l "$LANGUAGE" -t "$THREADS" -f "$wav" -of "$out_base" -pp "$@")
     if [[ -n "$prompt" ]]; then
         args+=(--prompt "$prompt")
+    fi
+    if [[ "$VAD" == true ]]; then
+        args+=(--vad --vad-model "$VAD_MODEL_PATH" --vad-threshold "$VAD_THRESHOLD"
+               --vad-min-speech-duration-ms "$VAD_MIN_SPEECH_MS"
+               --vad-min-silence-duration-ms "$VAD_MIN_SILENCE_MS"
+               --vad-speech-pad-ms "$VAD_SPEECH_PAD_MS")
     fi
     if ! run_bg whisper-cli "${args[@]}" 2>"${out_base}.log"; then
         warn "whisper-cli failed. Last log lines:"
@@ -365,6 +394,11 @@ print_timing() {
     if [[ -n "$audio" ]]; then
         printf '    %-18s%s\n' "Per audio minute:" "$(per_audio_minute "$whisper" "$audio")"
         printf '    %-18s%s\n' "Speed:" "$(realtime_factor "$whisper" "$audio")"
+    fi
+    if [[ "$VAD" == true ]]; then
+        printf '    %-18s%s\n' "VAD:" "on ($VAD_MODEL)"
+    else
+        printf '    %-18s%s\n' "VAD:" "off"
     fi
 }
 
@@ -1112,6 +1146,7 @@ if [[ "$MODE" == "all" && ( $done_count -gt 0 || ${#folder_names[@]} -gt 1 ) ]];
             "$(format_duration "$sum_whisper")" "$(format_duration "$sum_total")"
         printf '    %-18s%s\n' "Per audio minute:" "$(per_audio_minute "$sum_whisper_known" "$sum_audio")"
         printf '    %-18s%s\n' "Speed:" "$(realtime_factor "$sum_whisper_known" "$sum_audio")"
+        printf '    %-18s%s\n' "VAD:" "$([[ "$VAD" == true ]] && echo "on ($VAD_MODEL)" || echo off)"
         if [[ ${#stats_files[@]} -gt 0 ]] \
             && totals="$(python3 "${SCRIPT_DIR}/diarize.py" speech-summary "${stats_files[@]}")"; then
             print_speech "$(sed -n 1p <<< "$totals")" "$(sed -n 2p <<< "$totals")" "$(sed -n 3p <<< "$totals")" hint
