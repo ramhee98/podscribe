@@ -49,10 +49,13 @@ ok "Homebrew $(brew --version | head -n 1 | awk '{print $2}')"
 step 3 "Installing dependencies"
 # "formula:command" pairs. A dependency counts as installed if its command is
 # already on PATH, however it got there, so we never install a duplicate.
-for dep in whisper-cpp:whisper-cli ffmpeg:ffmpeg; do
+# python3 (for speaker mode) must actually run, see python_ok in lib.sh.
+for dep in whisper-cpp:whisper-cli ffmpeg:ffmpeg python:python3; do
     pkg="${dep%%:*}"
     cmd="${dep#*:}"
-    if command -v "$cmd" >/dev/null 2>&1; then
+    if [[ "$cmd" == python3 ]] && python_ok; then
+        ok "$pkg already installed ($(command -v python3), $(python3 --version 2>&1))"
+    elif [[ "$cmd" != python3 ]] && command -v "$cmd" >/dev/null 2>&1; then
         ok "$pkg already installed ($(command -v "$cmd"))"
     elif brew list --formula "$pkg" >/dev/null 2>&1; then
         ok "$pkg already installed"

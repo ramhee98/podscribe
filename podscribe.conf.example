@@ -45,3 +45,29 @@ OVERWRITE="false"
 
 # true = keep the converted 16 kHz mono WAV as <episode>.wav next to the mp3.
 KEEP_WAV="false"
+
+# --- Speaker mode -------------------------------------------------------------
+# For podcasts recorded with a separate track per speaker (one mic each).
+# podscribe lists the audio files in the folder, you pick the host and guest
+# tracks, and it writes one transcript labelled by speaker. Needs python3.
+
+# true = always use speaker mode. Same as passing --speakers.
+DIARIZE="false"
+
+# How much louder (in dB) a track must be to count as the one speaking. Each
+# mic also picks up the other person, just quieter, so this decides which
+# track a sentence really came from. Lower it (e.g. 3) if the mics were close
+# together and speech goes missing. Raise it (e.g. 10) if sentences show up
+# twice, once per speaker.
+ENERGY_MARGIN_DB="6"
+
+# Who speaks first in the episode ("first") or last ("last"). Used to check
+# that you picked the right host track. If not, you're asked whether to swap.
+HOST_SPEAKS="first"
+
+# Speaker names used in the transcript.
+HOST_LABEL="Host"
+GUEST_LABEL="Gast"
+
+# true = start each paragraph with its time, like "[00:01:23] Host: ...".
+SPEAKER_TIMESTAMPS="true"

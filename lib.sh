@@ -37,6 +37,12 @@ config_defaults() {
     THREADS=""
     OVERWRITE="false"
     KEEP_WAV="false"
+    DIARIZE="false"
+    ENERGY_MARGIN_DB="6"
+    HOST_SPEAKS="first"
+    HOST_LABEL="Host"
+    GUEST_LABEL="Gast"
+    SPEAKER_TIMESTAMPS="true"
 }
 
 # load_config [path]
@@ -120,6 +126,20 @@ $(common_models)"
         || cfg_err OVERWRITE "$OVERWRITE" "expected true or false"
     [[ "$KEEP_WAV" == "true" || "$KEEP_WAV" == "false" ]] \
         || cfg_err KEEP_WAV "$KEEP_WAV" "expected true or false"
+    [[ "$DIARIZE" == "true" || "$DIARIZE" == "false" ]] \
+        || cfg_err DIARIZE "$DIARIZE" "expected true or false"
+    [[ "$ENERGY_MARGIN_DB" =~ ^[0-9]+(\.[0-9]+)?$ ]] \
+        || cfg_err ENERGY_MARGIN_DB "$ENERGY_MARGIN_DB" "expected a number of dB like 6 or 4.5"
+    [[ "$HOST_SPEAKS" == "first" || "$HOST_SPEAKS" == "last" ]] \
+        || cfg_err HOST_SPEAKS "$HOST_SPEAKS" "expected first or last"
+    [[ -n "$HOST_LABEL" && "$HOST_LABEL" != *$'\n'* ]] \
+        || cfg_err HOST_LABEL "$HOST_LABEL" "must be a non-empty single line"
+    [[ -n "$GUEST_LABEL" && "$GUEST_LABEL" != *$'\n'* ]] \
+        || cfg_err GUEST_LABEL "$GUEST_LABEL" "must be a non-empty single line"
+    [[ "$HOST_LABEL" != "$GUEST_LABEL" ]] \
+        || cfg_err GUEST_LABEL "$GUEST_LABEL" "must differ from HOST_LABEL"
+    [[ "$SPEAKER_TIMESTAMPS" == "true" || "$SPEAKER_TIMESTAMPS" == "false" ]] \
+        || cfg_err SPEAKER_TIMESTAMPS "$SPEAKER_TIMESTAMPS" "expected true or false"
 
     FORMATS=()
     local fmt
@@ -134,6 +154,14 @@ $(common_models)"
     [[ -n "$THREADS" ]] || THREADS="$(sysctl -n hw.ncpu)"
     [[ "$MODELS_DIR" == /* ]] || MODELS_DIR="${SCRIPT_DIR}/${MODELS_DIR}"
     MODEL_PATH="${MODELS_DIR}/${MODEL_NAME}"
+}
+
+# --- Dependencies -------------------------------------------------------------
+
+# True if a usable python3 (3.8+) is available. Runs it instead of just checking
+# PATH, since macOS ships a /usr/bin/python3 stub without the developer tools.
+python_ok() {
+    python3 -c 'import sys; sys.exit(sys.version_info < (3, 8))' >/dev/null 2>&1
 }
 
 # --- Model --------------------------------------------------------------------
