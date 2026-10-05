@@ -97,9 +97,13 @@ GUEST_LABEL="Guest"
 # true = start each paragraph with its time, like "[00:01:23] Host: ...".
 SPEAKER_TIMESTAMPS="true"
 
-# true = start the transcript with the talk ratio and speaking speed, like
+# true = start the .txt transcript with the speech stats. In speaker mode:
 #   Talk ratio: Host 38% (16:04, 2'310 words) / Gast 62% (26:13, 3'870 words)
 #   Silence/other: 01:12
 #   Speaking speed: Host 144 wpm / Gast 148 wpm, average 146 wpm
+# For single files:
+#   Speech: 41:05 (silence/other 01:12)
+#   Words: 6'180
+#   Speaking speed: 150 wpm
 # These are always shown in the summary after transcribing.
 RATIO_IN_TRANSCRIPT="false"

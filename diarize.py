@@ -30,6 +30,14 @@ Usage:
                    --host-label Host --guest-label Gast
       Prints the talk ratio, the silence and the speaking speed over all
       given episodes, one per line.
+
+  diarize.py speech --json T.json --audio T.wav --out stats.json
+      Single-track speech stats (one mixed track, no speakers): writes
+      stats.json and prints speaking time with silence, word count and
+      words per minute, one per line.
+
+  diarize.py speech-summary stats1.json [stats2.json ...]
+      Prints the same three lines added up over several files.
 """
 
 import argparse
@@ -52,6 +60,7 @@ GAIN_PERCENTILE = 0.95        # loud-speech level used to even out mic gain
 FLOOR_PERCENTILE = 0.10       # noise floor estimate
 MIN_OWN_SPEECH_S = 0.2        # own speech a segment needs to count as real
 MIN_RUN_FRAMES = 5            # speech starts at the first 100 ms run of own frames
+BRIDGE_FRAMES = 15            # pauses up to 300 ms still count as speaking time
 OVERLAP_RATIO = 0.5           # overlap (share of the shorter segment) that counts as heavy
 TEXT_MATCH_RATIO = 0.5        # share of words that must match to count as the same speech
 TRACKS = ("host", "guest")
@@ -99,6 +108,14 @@ def percentile(values, p):
     return ordered[min(len(ordered) - 1, int(len(ordered) * p))]
 
 
+def speech_threshold(levels):
+    """Level from which a frame counts as speech: clearly above the noise floor
+    and not far below normal speech level. The second rule matters for very
+    clean recordings (digital silence), where quiet noise would otherwise pass."""
+    return max(percentile(levels, FLOOR_PERCENTILE) + SPEECH_ABOVE_FLOOR_DB,
+               percentile(levels, GAIN_PERCENTILE) - SPEECH_BELOW_LOUD_DB)
+
+
 # --- Segments ------------------------------------------------------------------
 
 class Segment:
@@ -112,6 +129,7 @@ class Segment:
         self.level_diff = 0.0     # whole-window level difference (dB), fallback only
         self.speech_start = start
         self.speech_end = end
+        self.own_frames = []      # indices of the frames where this track is speaking
         self.dropped = None       # None, "bleed" or "duplicate"
 
     @property
@@ -147,6 +165,7 @@ def analyse(seg, own, other, own_min, other_min, margin):
     i0 = int(seg.start * FPS)
     i1 = max(i0 + 1, int(math.ceil(seg.end * FPS)))
     own_frames = other_frames = 0
+    own_list = []
     own_power = other_power = 0.0
     first_own = first_run = None
     last_own = last_run_end = None
@@ -156,6 +175,7 @@ def analyse(seg, own, other, own_min, other_min, margin):
         t = other[i] if i < len(other) else SILENCE_DB
         if o >= own_min and o - t >= margin:
             own_frames += 1
+            own_list.append(i)
             run += 1
             last_own = i + 1
             if first_own is None:
@@ -173,6 +193,7 @@ def analyse(seg, own, other, own_min, other_min, margin):
         own_power += 10 ** (o / 10)
         other_power += 10 ** (t / 10)
     seg.own_s = own_frames / FPS
+    seg.own_frames = own_list
     seg.other_s = other_frames / FPS
     seg.level_diff = 10 * math.log10((own_power + 1e-30) / (other_power + 1e-30))
     # Tighten the window to where this track actually speaks, so it doesn't
@@ -226,34 +247,41 @@ def drop_duplicates(kept):
 
 # --- Talk ratio ----------------------------------------------------------------
 
-def union_seconds(intervals):
-    """Total length of a set of intervals, counting overlaps once."""
-    total = 0.0
-    cur_start = cur_end = None
-    for start, end in sorted(intervals):
-        if cur_end is None or start > cur_end:
-            if cur_end is not None:
-                total += cur_end - cur_start
-            cur_start, cur_end = start, end
-        else:
-            cur_end = max(cur_end, end)
-    if cur_end is not None:
-        total += cur_end - cur_start
-    return total
+def speaking_seconds(segments):
+    """Speaking time of some segments: their speech frames, merged so overlapping
+    segments count once. Whisper segments often span pauses, so only frames where
+    the track is actually speaking count; pauses up to BRIDGE_FRAMES between them
+    (gaps between words) still count as speaking."""
+    frames = sorted(set(i for s in segments for i in s.own_frames))
+    total = 0
+    for prev, cur in zip(frames, frames[1:]):
+        gap = cur - prev
+        total += gap if gap <= BRIDGE_FRAMES + 1 else 1
+    if frames:
+        total += 1
+    return total / FPS
+
+
+def segment_stats(segments):
+    """Speaking time and word count of some segments."""
+    return {
+        "seconds": round(speaking_seconds(segments), 3),
+        "words": sum(len(words(s.text)) for s in segments),
+    }
+
+
+def silence_seconds(segments, duration):
+    """Time in which none of the segments is speaking."""
+    return round(max(0.0, duration - speaking_seconds(segments)), 3)
 
 
 def talk_stats(kept, duration):
     """Speaking time and words per track from the kept segments, plus silence."""
-    stats = {"duration": round(duration, 3), "tracks": {}}
-    for track in TRACKS:
-        mine = [s for s in kept if s.track == track]
-        stats["tracks"][track] = {
-            "seconds": round(union_seconds([(s.speech_start, s.speech_end) for s in mine]), 3),
-            "words": sum(len(words(s.text)) for s in mine),
-        }
-    spoken = union_seconds([(s.speech_start, s.speech_end) for s in kept])
-    stats["silence"] = round(max(0.0, duration - spoken), 3)
-    return stats
+    return {
+        "duration": round(duration, 3),
+        "tracks": {t: segment_stats([s for s in kept if s.track == t]) for t in TRACKS},
+        "silence": silence_seconds(kept, duration),
+    }
 
 
 def format_duration(seconds):
@@ -300,6 +328,16 @@ def ratio_lines(episodes, host_label, guest_label):
     return ratio, format_duration(silence), speed
 
 
+def speech_lines(all_stats):
+    """Single-track stats (one or more files, added up): speaking time with
+    silence, word count and words per minute."""
+    seconds = sum(st["speech"]["seconds"] for st in all_stats)
+    count = sum(st["speech"]["words"] for st in all_stats)
+    silence = sum(st["silence"] for st in all_stats)
+    return ("%s (silence/other %s)" % (format_duration(seconds), format_duration(silence)),
+            thousands(count), wpm(count, seconds))
+
+
 # --- Commands ------------------------------------------------------------------
 
 def cmd_merge(args):
@@ -309,14 +347,7 @@ def cmd_merge(args):
     # align those before comparing tracks against each other.
     gain = percentile(levels["host"], GAIN_PERCENTILE) - percentile(levels["guest"], GAIN_PERCENTILE)
     levels["guest"] = [lv + gain if lv > SILENCE_DB else lv for lv in levels["guest"]]
-    # A frame counts as speech if it's clearly above the noise floor and not far
-    # below normal speech level. The second rule matters for very clean recordings
-    # (digital silence), where quiet noise would otherwise pass as speech.
-    speech_min = {
-        t: max(percentile(levels[t], FLOOR_PERCENTILE) + SPEECH_ABOVE_FLOOR_DB,
-               percentile(levels[t], GAIN_PERCENTILE) - SPEECH_BELOW_LOUD_DB)
-        for t in TRACKS
-    }
+    speech_min = {t: speech_threshold(levels[t]) for t in TRACKS}
 
     segments = load_segments(args.host_json, "host") + load_segments(args.guest_json, "guest")
     for seg in segments:
@@ -408,6 +439,34 @@ def cmd_ratio(args):
         print(line)
 
 
+def cmd_speech(args):
+    levels = frame_levels(args.audio)
+    threshold = speech_threshold(levels)
+    segments = load_segments(args.json, "all")
+    # Same analysis as for speaker tracks, against a silent "other" track: every
+    # speech frame counts, and each segment is trimmed to where speech is audible.
+    for seg in segments:
+        analyse(seg, levels, [], threshold, 0.0, 0.0)
+    stats = {
+        "duration": round(len(levels) / FPS, 3),
+        "speech": segment_stats(segments),
+        "silence": silence_seconds(segments, len(levels) / FPS),
+    }
+    with open(args.out, "w", encoding="utf-8") as fh:
+        json.dump(stats, fh, indent=1)
+    for line in speech_lines([stats]):
+        print(line)
+
+
+def cmd_speech_summary(args):
+    all_stats = []
+    for path in args.stats:
+        with open(path, encoding="utf-8") as fh:
+            all_stats.append(json.load(fh))
+    for line in speech_lines(all_stats):
+        print(line)
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     sub = parser.add_subparsers(dest="command")
@@ -439,6 +498,16 @@ def main():
     ratio.add_argument("--host-label", default="Host")
     ratio.add_argument("--guest-label", default="Gast")
     ratio.set_defaults(func=cmd_ratio)
+
+    speech = sub.add_parser("speech", help="speech stats for a single mixed track")
+    speech.add_argument("--json", required=True, help="whisper-cli JSON output")
+    speech.add_argument("--audio", required=True)
+    speech.add_argument("--out", required=True, help="where to write the stats")
+    speech.set_defaults(func=cmd_speech)
+
+    summary = sub.add_parser("speech-summary", help="speech stats added up over several files")
+    summary.add_argument("stats", nargs="+")
+    summary.set_defaults(func=cmd_speech_summary)
 
     args = parser.parse_args()
     args.func(args)

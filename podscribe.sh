@@ -886,6 +886,24 @@ if [[ "$OUTPUT_LOCATION" == "base" ]]; then
     info "Saving all transcripts in $folder"
 fi
 
+# Speech stats need python3 (diarize.py). It's optional outside speaker mode.
+speech_stats=true
+if ! python_ok; then
+    speech_stats=false
+    warn "python3 not found, speech stats will be skipped (run ./install.sh to add it)"
+fi
+stats_files=()
+
+# print_speech <speech> <words> <speed> [hint]: speech stats summary lines
+print_speech() {
+    printf '    %-18s%s\n' "Speech:" "$1"
+    printf '    %-18s%s\n' "Words:" "$2"
+    printf '    %-18s%s\n' "Speaking speed:" "$3"
+    if [[ -n "${4:-}" ]]; then
+        printf '    %-18s%s\n' "Talk ratio:" "needs --speakers with separate tracks"
+    fi
+}
+
 # --- Transcription ------------------------------------------------------------
 
 total=${#mp3s[@]}
@@ -997,6 +1015,10 @@ for mp3 in "${mp3s[@]}"; do
     for fmt in "${FORMATS[@]}"; do
         format_flags+=("$(format_flag "$fmt")")
     done
+    # JSON has the segment timestamps for the speech stats. Only kept if requested.
+    if [[ "$speech_stats" == true && " ${FORMATS[*]} " != *" json "* ]]; then
+        format_flags+=(-oj)
+    fi
 
     whisper_start="$(now)"
     if ! run_whisper "$wav" "$out_base" "${format_flags[@]}"; then
@@ -1007,6 +1029,27 @@ for mp3 in "${mp3s[@]}"; do
         continue
     fi
     whisper_time="$(elapsed_since "$whisper_start")"
+
+    # Speech stats from the segments, measured on the WAV (before it's removed).
+    speech_lines=""
+    if [[ "$speech_stats" == true ]]; then
+        if speech_lines="$(python3 "${SCRIPT_DIR}/diarize.py" speech --json "${out_base}.json" \
+                --audio "$wav" --out "${tmpdir}/stats_${i}.json")"; then
+            stats_files+=("${tmpdir}/stats_${i}.json")
+        else
+            warn "Couldn't calculate speech stats for $name"
+            speech_lines=""
+        fi
+    fi
+    if [[ -n "$speech_lines" && "$RATIO_IN_TRANSCRIPT" == true && -f "${out_base}.txt" ]]; then
+        {
+            printf 'Speech: %s\n' "$(sed -n 1p <<< "$speech_lines")"
+            printf 'Words: %s\n' "$(sed -n 2p <<< "$speech_lines")"
+            printf 'Speaking speed: %s\n\n' "$(sed -n 3p <<< "$speech_lines")"
+            cat "${out_base}.txt"
+        } > "${out_base}.header.txt"
+        mv "${out_base}.header.txt" "${out_base}.txt"
+    fi
 
     # The WAV is audio, not a transcript, so it always stays next to its source.
     if [[ ${#picked_parts[@]} -gt 1 ]]; then
@@ -1028,6 +1071,11 @@ for mp3 in "${mp3s[@]}"; do
     total_time="$(elapsed_since "$file_start")"
     ok "Saved ${saved[*]}"
     print_timing "$duration" "$whisper_time" "$total_time"
+    if [[ -n "$speech_lines" ]]; then
+        # The talk ratio hint goes with the last summary shown: per file, or at the end with --all.
+        print_speech "$(sed -n 1p <<< "$speech_lines")" "$(sed -n 2p <<< "$speech_lines")" \
+            "$(sed -n 3p <<< "$speech_lines")" "$([[ "$MODE" == all ]] || echo hint)"
+    fi
 
     done_count=$((done_count + 1))
     count_folder "$mp3" done
@@ -1052,6 +1100,10 @@ if [[ "$MODE" == "all" && ( $done_count -gt 0 || ${#folder_names[@]} -gt 1 ) ]];
             "$(format_duration "$sum_whisper")" "$(format_duration "$sum_total")"
         printf '    %-18s%s\n' "Per audio minute:" "$(per_audio_minute "$sum_whisper_known" "$sum_audio")"
         printf '    %-18s%s\n' "Speed:" "$(realtime_factor "$sum_whisper_known" "$sum_audio")"
+        if [[ ${#stats_files[@]} -gt 0 ]] \
+            && totals="$(python3 "${SCRIPT_DIR}/diarize.py" speech-summary "${stats_files[@]}")"; then
+            print_speech "$(sed -n 1p <<< "$totals")" "$(sed -n 2p <<< "$totals")" "$(sed -n 3p <<< "$totals")" hint
+        fi
     fi
     # Per-folder breakdown, when more than one folder was involved.
     if [[ ${#folder_names[@]} -gt 1 ]]; then

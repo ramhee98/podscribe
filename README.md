@@ -224,7 +224,7 @@ How it works:
        Speaking speed:   Host 144 wpm / Gast 148 wpm, average 146 wpm
    ```
 
-   Speaking time is measured from the sentences kept after crosstalk removal, trimmed to where that speaker's track is actually loudest. Overlapping sentences of the same speaker are counted once. "Silence/other" is the time when neither speaker talks. Speaking speed is words per minute of each speaker's own speaking time; the average covers both speakers. Set `RATIO_IN_TRANSCRIPT="true"` to also put these lines at the top of the transcript
+   Speaking time is measured from the sentences kept after crosstalk removal, counting only the moments where that speaker's track is actually loudest (pauses over 0.3 s don't count). Overlapping sentences of the same speaker are counted once. "Silence/other" is the time when neither speaker talks. Speaking speed is words per minute of each speaker's own speaking time; the average covers both speakers. Set `RATIO_IN_TRANSCRIPT="true"` to also put these lines at the top of the transcript
 
 Notes:
 
@@ -326,7 +326,7 @@ The file is plain bash (`KEY="value"`, no spaces around `=`). Every value is che
 | `HOST_LABEL` | `Host` | Host name in speaker transcripts |
 | `GUEST_LABEL` | `Gast` | Guest name in speaker transcripts |
 | `SPEAKER_TIMESTAMPS` | `true` | Start each speaker paragraph with its time, like `[00:01:23]` |
-| `RATIO_IN_TRANSCRIPT` | `false` | `true` starts speaker transcripts with the talk ratio, silence and speaking speed |
+| `RATIO_IN_TRANSCRIPT` | `false` | `true` starts `.txt` transcripts with the speech stats: talk ratio, silence and speaking speed in speaker mode, speech time, words and speaking speed otherwise |
 
 Example `podscribe.conf` that writes subtitles too and runs on 8 threads:
 
@@ -360,6 +360,24 @@ Example timing output:
 
 "Transcribed" is the whisper run alone. The total also includes the mp3 to WAV conversion. Skipped and failed files don't count toward the summary.
 
+### Speech stats
+
+After each file, podscribe also shows how much speech it contains:
+
+```
+    Speech:           41:05 (silence/other 01:12)
+    Words:            6'180
+    Speaking speed:   150 wpm
+    Talk ratio:       needs --speakers with separate tracks
+```
+
+- **Speech** is measured from whisper's segments, counting only the parts where speech is actually audible. Pauses longer than 0.3 s count as silence
+- **Speaking speed** is words per minute of speech
+- With `--all`, every file shows its stats and the final summary adds them up
+- A talk ratio per speaker isn't possible from one mixed track. Use [speaker mode](#speaker-mode) with separate tracks for that
+- `RATIO_IN_TRANSCRIPT="true"` also puts the first three lines at the top of the `.txt` transcript (other formats stay unchanged)
+- The stats need `python3` (installed by `./install.sh`). Without it, transcription works as before and the stats are skipped
+
 Transcripts are only moved into place once whisper finishes successfully, so a cancelled run never leaves a partial file that would get skipped next time.
 
 ### Files
@@ -369,7 +387,7 @@ Transcripts are only moved into place once whisper finishes successfully, so a c
 | `podscribe.sh` | The transcription tool |
 | `install.sh` | Installer (dependencies, config, model) |
 | `lib.sh` | Shared code used by both scripts: config loading and validation, model download, time formatting |
-| `diarize.py` | Speaker mode helper: crosstalk removal and merging (Python standard library only) |
+| `diarize.py` | Speech analysis helper: crosstalk removal and merging for speaker mode, speech stats for all modes (Python standard library only) |
 | `podscribe.conf.example` | Documented config with all defaults |
 | `podscribe.conf` | Your local config (gitignored) |
 | `models/` | Downloaded whisper models (gitignored) |
