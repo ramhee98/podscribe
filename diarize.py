@@ -41,9 +41,11 @@ FRAME = 160                   # samples per frame = 20 ms
 FPS = RATE / FRAME            # frames per second
 SILENCE_DB = -120.0
 SPEECH_ABOVE_FLOOR_DB = 10.0  # a frame is speech if this far above the track's noise floor
+SPEECH_BELOW_LOUD_DB = 35.0   # ...and no further than this below its loud-speech level
 GAIN_PERCENTILE = 0.95        # loud-speech level used to even out mic gain
 FLOOR_PERCENTILE = 0.10       # noise floor estimate
 MIN_OWN_SPEECH_S = 0.2        # own speech a segment needs to count as real
+MIN_RUN_FRAMES = 5            # speech starts at the first 100 ms run of own frames
 OVERLAP_RATIO = 0.5           # overlap (share of the shorter segment) that counts as heavy
 TEXT_MATCH_RATIO = 0.5        # share of words that must match to count as the same speech
 TRACKS = ("host", "guest")
@@ -130,28 +132,41 @@ def load_segments(path, track):
     return segments
 
 
-def analyse(seg, own, other, own_floor, other_floor, margin):
-    """Measure how much of the segment's window is clearly this track's speech."""
+def analyse(seg, own, other, own_min, other_min, margin):
+    """Measure how much of the segment's window is clearly this track's speech.
+
+    own_min / other_min are the levels from which a frame counts as speech.
+    """
     i0 = int(seg.start * FPS)
     i1 = max(i0 + 1, int(math.ceil(seg.end * FPS)))
     own_frames = other_frames = 0
     own_power = other_power = 0.0
-    first_own = None
+    first_own = first_run = None
+    run = 0
     for i in range(i0, i1):
         o = own[i] if i < len(own) else SILENCE_DB
         t = other[i] if i < len(other) else SILENCE_DB
-        if o >= own_floor + SPEECH_ABOVE_FLOOR_DB and o - t >= margin:
+        if o >= own_min and o - t >= margin:
             own_frames += 1
+            run += 1
             if first_own is None:
                 first_own = i
-        elif t >= other_floor + SPEECH_ABOVE_FLOOR_DB and t - o >= margin:
-            other_frames += 1
+            # A single stray frame (e.g. tracks a few ms out of sync) shouldn't
+            # move the start, so wait for a short run of own speech.
+            if first_run is None and run >= MIN_RUN_FRAMES:
+                first_run = i - run + 1
+        else:
+            run = 0
+            if t >= other_min and t - o >= margin:
+                other_frames += 1
         own_power += 10 ** (o / 10)
         other_power += 10 ** (t / 10)
     seg.own_s = own_frames / FPS
     seg.other_s = other_frames / FPS
     seg.level_diff = 10 * math.log10((own_power + 1e-30) / (other_power + 1e-30))
-    if first_own is not None:
+    if first_run is not None:
+        seg.speech_start = first_run / FPS
+    elif first_own is not None:
         seg.speech_start = first_own / FPS
 
 
@@ -203,12 +218,19 @@ def cmd_merge(args):
     # align those before comparing tracks against each other.
     gain = percentile(levels["host"], GAIN_PERCENTILE) - percentile(levels["guest"], GAIN_PERCENTILE)
     levels["guest"] = [lv + gain if lv > SILENCE_DB else lv for lv in levels["guest"]]
-    floors = {t: percentile(levels[t], FLOOR_PERCENTILE) for t in TRACKS}
+    # A frame counts as speech if it's clearly above the noise floor and not far
+    # below normal speech level. The second rule matters for very clean recordings
+    # (digital silence), where quiet noise would otherwise pass as speech.
+    speech_min = {
+        t: max(percentile(levels[t], FLOOR_PERCENTILE) + SPEECH_ABOVE_FLOOR_DB,
+               percentile(levels[t], GAIN_PERCENTILE) - SPEECH_BELOW_LOUD_DB)
+        for t in TRACKS
+    }
 
     segments = load_segments(args.host_json, "host") + load_segments(args.guest_json, "guest")
     for seg in segments:
         other = "guest" if seg.track == "host" else "host"
-        analyse(seg, levels[seg.track], levels[other], floors[seg.track], floors[other], args.margin)
+        analyse(seg, levels[seg.track], levels[other], speech_min[seg.track], speech_min[other], args.margin)
         if seg.own_s >= MIN_OWN_SPEECH_S:
             continue
         if seg.own_s == 0 and seg.other_s == 0 and seg.level_diff >= 0:

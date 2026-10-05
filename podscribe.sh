@@ -327,20 +327,94 @@ print_timing() {
 
 # --- Speaker mode -------------------------------------------------------------
 
-# ask_track <label> <count> [number to refuse]: prints the chosen track number
-ask_track() {
-    local answer
+# ask_tracks <label> <count> [numbers taken by the host]
+# Reads one or more comma-separated track numbers ("3" or "3, 4") and prints
+# them space-separated, in the order entered. Asks again on invalid input.
+ask_tracks() {
+    local answer entries entry chosen error
     while true; do
-        read -r -p "$1 [1-$2]: " answer || { echo >&2; die "Aborted"; }
-        if [[ ! "$answer" =~ ^[0-9]+$ ]] || (( answer < 1 || answer > $2 )); then
-            warn "Enter a number between 1 and $2"
-        elif [[ "$answer" == "${3:-}" ]]; then
-            warn "That's already the host track, pick the other speaker's track"
+        read -r -p "$1 [1-$2, several parts: 3,4]: " answer || { echo >&2; die "Aborted"; }
+        answer="$(printf '%s' "$answer" | tr -d '[:space:]')"
+        chosen=" "
+        error=""
+        if [[ -z "$answer" ]]; then
+            error="Enter at least one number"
         else
-            echo "$answer"
+            IFS=, read -r -a entries <<< "$answer"
+            # A trailing comma leaves no empty entry in the array, so check the string too.
+            if [[ "$answer" == *, ]]; then
+                error="Empty entry in '$answer'"
+            fi
+            for entry in "${entries[@]}"; do
+                [[ -z "$error" ]] || break
+                if [[ -z "$entry" ]]; then
+                    error="Empty entry in '$answer'"
+                elif [[ ! "$entry" =~ ^[0-9]+$ ]] || (( 10#$entry < 1 || 10#$entry > $2 )); then
+                    error="Unknown number '$entry', choose between 1 and $2"
+                elif [[ "$chosen" == *" $((10#$entry)) "* ]]; then
+                    error="$((10#$entry)) is listed twice"
+                elif [[ " ${3:-} " == *" $((10#$entry)) "* ]]; then
+                    error="$((10#$entry)) is already a host track, pick the other speaker's files"
+                else
+                    chosen+="$((10#$entry)) "
+                fi
+            done
+        fi
+        if [[ -z "$error" ]]; then
+            chosen="${chosen# }"
+            echo "${chosen% }"
             return
         fi
+        warn "$error"
     done
+}
+
+# sum_durations <seconds or empty>...: total, or empty if any part is unknown
+sum_durations() {
+    local total=0 d
+    for d in "$@"; do
+        [[ -n "$d" ]] || return 0
+        total="$(add_seconds "$total" "$d")"
+    done
+    echo "$total"
+}
+
+# describe_parts <file>...: "name.mp3", or "name.mp3 + 2 more parts"
+describe_parts() {
+    if [[ $# -eq 1 ]]; then
+        relpath "$1"
+    elif [[ $# -eq 2 ]]; then
+        echo "$(relpath "$1") + 1 more part"
+    else
+        echo "$(relpath "$1") + $(($# - 1)) more parts"
+    fi
+}
+
+# build_track <role> <file>...: converts each part to 16 kHz mono wav, then joins
+# them in the given order into <tmpdir>/<role>.wav, so timestamps run on across parts.
+build_track() {
+    local role="$1" k=0 part progress="" list="${tmpdir}/${role}_parts.txt"
+    shift
+    : > "$list"
+    for part in "$@"; do
+        k=$((k + 1))
+        if [[ $# -gt 1 ]]; then
+            progress=" (part $k of $#)"
+        fi
+        info "[$role] Converting $(relpath "$part") to 16 kHz mono wav${progress}"
+        convert_to_wav "$part" "${tmpdir}/${role}_part${k}.wav" || die "ffmpeg failed for $(relpath "$part")"
+        echo "file '${tmpdir}/${role}_part${k}.wav'" >> "$list"
+    done
+    if [[ $# -eq 1 ]]; then
+        mv "${tmpdir}/${role}_part1.wav" "${tmpdir}/${role}.wav"
+    else
+        info "[$role] Joining $# parts into one track"
+        # All parts are identical PCM wavs now, so they can be joined without re-encoding.
+        ffmpeg -nostdin -hide_banner -loglevel error -y -f concat -safe 0 -i "$list" \
+            -c copy "${tmpdir}/${role}.wav" || die "Joining the $role parts failed"
+        rm -f "${tmpdir}/${role}"_part*.wav
+    fi
+    rm -f "$list"
 }
 
 # Deepest folder containing both paths.
@@ -401,30 +475,65 @@ transcribe_speakers() {
     done
     echo
 
-    local host_n guest_n
-    host_n="$(ask_track "Host track" "${#tracks[@]}")"
-    guest_n="$(ask_track "Guest track" "${#tracks[@]}" "$host_n")"
-    local host_file="${tracks[$((host_n - 1))]}" guest_file="${tracks[$((guest_n - 1))]}"
-    local host_dur="${durations[$((host_n - 1))]}" guest_dur="${durations[$((guest_n - 1))]}"
+    local host_ns guest_ns n
+    host_ns="$(ask_tracks "Host track" "${#tracks[@]}")"
+    guest_ns="$(ask_tracks "Guest track" "${#tracks[@]}" "$host_ns")"
+
+    local host_files=() guest_files=() host_durs=() guest_durs=()
+    for n in $host_ns; do
+        host_files+=("${tracks[$((n - 1))]}")
+        host_durs+=("${durations[$((n - 1))]}")
+    done
+    for n in $guest_ns; do
+        guest_files+=("${tracks[$((n - 1))]}")
+        guest_durs+=("${durations[$((n - 1))]}")
+    done
+    local host_dur guest_dur
+    host_dur="$(sum_durations "${host_durs[@]}")"
+    guest_dur="$(sum_durations "${guest_durs[@]}")"
+
+    # Show what will be joined, in order, with the combined length per speaker.
+    local role i label
+    echo
+    for role in host guest; do
+        if [[ "$role" == host ]]; then
+            label="Host: "
+            set -- "${host_files[@]}"
+            n="$host_dur"
+        else
+            label="Guest:"
+            set -- "${guest_files[@]}"
+            n="$guest_dur"
+        fi
+        info "$label $([[ $# -gt 1 ]] && echo "$# parts, ")$([[ -n "$n" ]] && format_duration "$n" || echo "unknown length")"
+        for i in "$@"; do
+            echo "        $(relpath "$i")"
+        done
+    done
 
     # Both tracks come from the same conversation, so they should be about equally long.
     if [[ -n "$host_dur" && -n "$guest_dur" ]]; then
         local diff
         diff="$(awk -v a="$host_dur" -v b="$guest_dur" 'BEGIN { d = a - b; printf "%.3f", (d < 0 ? -d : d) }')"
         if awk -v d="$diff" 'BEGIN { exit !(d > 5) }'; then
-            warn "The tracks differ in length by $(format_duration "$diff"). They should be time-aligned"
+            warn "Host and guest differ in length by $(format_duration "$diff"). They should be time-aligned"
             warn "recordings of the same conversation, otherwise speakers get mixed up."
         fi
     fi
+    if [[ ${#host_files[@]} -ne ${#guest_files[@]} ]]; then
+        warn "Host has ${#host_files[@]} part(s) but guest has ${#guest_files[@]}. If the recording was"
+        warn "split, both speakers' parts should match, otherwise the tracks drift apart."
+    fi
 
-    # The transcript goes next to the tracks (or their closest shared folder).
-    local episode out out_dir
+    # The transcript is named after the first host file (and the first guest file, if
+    # their names share a start) and goes next to them (or their closest shared folder).
+    local episode out out_dir host_file="${host_files[0]}" guest_file="${guest_files[0]}"
     out_dir="$(common_dir "$host_file" "$guest_file")"
     episode="$(episode_name "$host_file" "$guest_file" "$out_dir")"
     out="${out_dir}/${episode}.txt"
-    echo
-    info "Host:  $(relpath "$host_file")"
-    info "Guest: $(relpath "$guest_file")"
+    local host_desc guest_desc
+    host_desc="$(describe_parts "${host_files[@]}")"
+    guest_desc="$(describe_parts "${guest_files[@]}")"
     info "Transcript: $(relpath "$out")"
 
     if [[ -f "$out" && "$OVERWRITE" == false ]]; then
@@ -434,18 +543,21 @@ transcribe_speakers() {
 
     ensure_model
 
-    local start sum_whisper=0 role file t
+    local start sum_whisper=0 t
     start="$(now)"
     for role in host guest; do
-        if [[ "$role" == host ]]; then file="$host_file"; else file="$guest_file"; fi
+        if [[ "$role" == host ]]; then
+            set -- "${host_files[@]}"
+        else
+            set -- "${guest_files[@]}"
+        fi
         echo
-        use_prompt_for "$file"
-        info "[$role] Converting $(relpath "$file") to 16 kHz mono wav"
-        convert_to_wav "$file" "${tmpdir}/${role}.wav" || die "ffmpeg failed for $(basename "$file")"
+        use_prompt_for "$1"
+        build_track "$role" "$@"
         info "[$role] Transcribing with $THREADS threads (this may take a while)"
         t="$(now)"
         run_whisper "${tmpdir}/${role}.wav" "${tmpdir}/${role}" -oj -ojf \
-            || die "Transcription failed for $(basename "$file")"
+            || die "Transcription failed for the $role track"
         sum_whisper="$(add_seconds "$sum_whisper" "$(elapsed_since "$t")")"
     done
 
@@ -465,14 +577,14 @@ transcribe_speakers() {
     # Sanity check: the host should be the first (or last) speaker.
     local host_track="host" answer
     if [[ "$detected" == host ]]; then
-        ok "Host check passed: $(basename "$host_file") speaks ${HOST_SPEAKS}"
+        ok "Host check passed: $host_desc speaks ${HOST_SPEAKS}"
     else
-        warn "The ${HOST_SPEAKS} speaker is on $(basename "$guest_file"),"
-        warn "but you picked $(basename "$host_file") as the host track."
+        warn "The ${HOST_SPEAKS} speaker is on $guest_desc,"
+        warn "but you picked $host_desc as the host track."
         read -r -p "Swap host and guest? [y/N] " answer || { echo; die "Aborted"; }
         if [[ "$answer" =~ ^[yY] ]]; then
             host_track="guest"
-            ok "Swapped: ${HOST_LABEL} is now $(basename "$guest_file")"
+            ok "Swapped: ${HOST_LABEL} is now $guest_desc"
         else
             info "Keeping your selection"
         fi
@@ -484,8 +596,14 @@ transcribe_speakers() {
         --timestamps "$SPEAKER_TIMESTAMPS" --out "${tmpdir}/speakers.txt" \
         || die "Writing the transcript failed"
 
-    keep_or_remove_wav "${tmpdir}/host.wav" "${host_file%.*}.wav"
-    keep_or_remove_wav "${tmpdir}/guest.wav" "${guest_file%.*}.wav"
+    # KEEP_WAV keeps each speaker's combined track, named after its first file.
+    local suffix
+    suffix=""
+    [[ ${#host_files[@]} -eq 1 ]] || suffix=" (${#host_files[@]} parts)"
+    keep_or_remove_wav "${tmpdir}/host.wav" "${host_file%.*}${suffix}.wav"
+    suffix=""
+    [[ ${#guest_files[@]} -eq 1 ]] || suffix=" (${#guest_files[@]} parts)"
+    keep_or_remove_wav "${tmpdir}/guest.wav" "${guest_file%.*}${suffix}.wav"
 
     # Write into place only after success so partial runs never count as done.
     mv "${tmpdir}/speakers.txt" "$out"
@@ -497,7 +615,7 @@ transcribe_speakers() {
         audio="$guest_dur"
     fi
     print_timing "$audio" "$sum_whisper" "$(add_seconds "$busy_time" "$(elapsed_since "$start")")" \
-        " (2 tracks)" "incl. conversion and speaker separation"
+        " (2 speakers, $((${#host_files[@]} + ${#guest_files[@]})) files)" "incl. conversion and speaker separation"
 }
 
 if [[ "$DIARIZE" == true ]]; then

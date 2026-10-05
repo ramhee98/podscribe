@@ -164,7 +164,7 @@ Host track [1-2]: 2
 Guest track [1-2]: 1
 ```
 
-Add `--recursive` to pick tracks from subfolders. The transcript is saved as `<name>.txt` next to the tracks (if they're in different folders, in the closest folder containing both). `<name>` is the shared start of both file names (`Folge 12` above), or the folder name if the file names have nothing in common.
+Add `--recursive` to pick tracks from subfolders. The transcript is saved as `<name>.txt` next to the tracks (if they're in different folders, in the closest folder containing both). `<name>` is based on the first host file: the start it shares with the first guest file (`Folge 12` above), or the folder name if the file names have nothing in common.
 
 How it works:
 
@@ -180,6 +180,34 @@ Notes:
 - Very short replies spoken over the other person (like "mhm") may be dropped
 - Speaker mode is interactive, so it needs a terminal. It always writes a `.txt` transcript and ignores `MODE` and `OUTPUT_FORMATS`
 - If whole sentences go missing, lower `ENERGY_MARGIN_DB` (e.g. to `3`). If sentences appear twice, raise it (e.g. to `10`)
+
+### Recordings split into parts
+
+If a recording was split into several files per speaker (e.g. by the recorder, or because of a break), enter several numbers separated by commas. The files are joined **in the order you enter them**, so each speaker ends up as one continuous track and the timestamps run on across the parts:
+
+```
+==> Audio files in ~/Podcasts/MyShow/Folge 13
+   1) Folge 13 Gast Teil 1.m4a  (25:02)
+   2) Folge 13 Gast Teil 2.wav  (17:15)
+   3) Folge 13 Host Teil 1.mp3  (25:02)
+   4) Folge 13 Host Teil 2.wav  (17:15)
+
+Host track [1-4, several parts: 3,4]: 3, 4
+Guest track [1-4, several parts: 3,4]: 1, 2
+
+==> Host:  2 parts, 42:17
+        Folge 13 Host Teil 1.mp3
+        Folge 13 Host Teil 2.wav
+==> Guest: 2 parts, 42:17
+        Folge 13 Gast Teil 1.m4a
+        Folge 13 Gast Teil 2.wav
+==> Transcript: Folge 13.txt
+```
+
+- Formats can be mixed. Every part is converted to 16 kHz mono WAV first, then joined
+- podscribe shows the combined length per speaker before starting, and warns if host and guest differ by more than 5 seconds or have a different number of parts
+- Unknown numbers, numbers entered twice, or a file picked for both speakers are rejected, and you're asked again
+- The parts of each speaker must follow each other without gaps, as they do when a recorder splits a long recording. If you cut the files yourself, cut both speakers at the same points
 
 ## Configuration
 
