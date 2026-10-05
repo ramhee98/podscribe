@@ -551,7 +551,8 @@ show_selection() {
     fi
 }
 
-# print_ratio <host tracks, comma-separated> <merged.json>...: talk ratio summary lines
+# print_ratio <host tracks, comma-separated> <merged.json>...: talk ratio, silence
+# and speaking speed summary lines
 print_ratio() {
     local host_tracks="$1" ratio
     shift
@@ -559,6 +560,7 @@ print_ratio() {
         --host-label "$HOST_LABEL" --guest-label "$GUEST_LABEL")" || return 0
     printf '    %-18s%s\n' "Talk ratio:" "$(sed -n 1p <<< "$ratio")"
     printf '    %-18s%s\n' "Silence/other:" "$(sed -n 2p <<< "$ratio")"
+    printf '    %-18s%s\n' "Speaking speed:" "$(sed -n 3p <<< "$ratio")"
 }
 
 # speaker_episode <number> <host numbers> <guest numbers>

@@ -28,8 +28,8 @@ Usage:
 
   diarize.py ratio merged1.json [merged2.json ...] --host-tracks host,guest \\
                    --host-label Host --guest-label Gast
-      Prints the talk ratio and the silence over all given episodes, one
-      per line.
+      Prints the talk ratio, the silence and the speaking speed over all
+      given episodes, one per line.
 """
 
 import argparse
@@ -268,8 +268,17 @@ def thousands(n):
     return "{:,}".format(n).replace(",", "'")
 
 
+def wpm(words_count, seconds):
+    """Words per minute, or "n/a" without speaking time."""
+    return "%d wpm" % int(words_count / (seconds / 60.0) + 0.5) if seconds > 0 else "n/a"
+
+
 def ratio_lines(episodes, host_label, guest_label):
-    """episodes: list of (stats, host_track). Returns (talk ratio, silence) texts."""
+    """episodes: list of (stats, host_track).
+
+    Returns the talk ratio, silence and speaking speed texts. Over several
+    episodes, times and words are added up, so longer episodes weigh more.
+    """
     host_s = guest_s = silence = 0.0
     host_w = guest_w = 0
     for stats, host_track in episodes:
@@ -285,7 +294,10 @@ def ratio_lines(episodes, host_label, guest_label):
     ratio = "%s %d%% (%s, %s words) / %s %d%% (%s, %s words)" % (
         host_label, host_pct, format_duration(host_s), thousands(host_w),
         guest_label, guest_pct, format_duration(guest_s), thousands(guest_w))
-    return ratio, format_duration(silence)
+    speed = "%s %s / %s %s, average %s" % (
+        host_label, wpm(host_w, host_s), guest_label, wpm(guest_w, guest_s),
+        wpm(host_w + guest_w, talk))
+    return ratio, format_duration(silence), speed
 
 
 # --- Commands ------------------------------------------------------------------
@@ -374,8 +386,9 @@ def cmd_render(args):
 
     header = ""
     if args.ratio_header:
-        ratio, silence = ratio_lines([(merged["stats"], args.host_track)], args.host_label, args.guest_label)
-        header = "Talk ratio: %s\nSilence/other: %s\n\n" % (ratio, silence)
+        ratio, silence, speed = ratio_lines([(merged["stats"], args.host_track)],
+                                            args.host_label, args.guest_label)
+        header = "Talk ratio: %s\nSilence/other: %s\nSpeaking speed: %s\n\n" % (ratio, silence, speed)
 
     with open(args.out, "w", encoding="utf-8") as fh:
         fh.write(header + "\n\n".join(lines) + "\n")
@@ -391,9 +404,8 @@ def cmd_ratio(args):
             sys.exit("diarize.py: invalid host track '%s'" % host_track)
         with open(path, encoding="utf-8") as fh:
             episodes.append((json.load(fh)["stats"], host_track))
-    ratio, silence = ratio_lines(episodes, args.host_label, args.guest_label)
-    print(ratio)
-    print(silence)
+    for line in ratio_lines(episodes, args.host_label, args.guest_label):
+        print(line)
 
 
 def main():

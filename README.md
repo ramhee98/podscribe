@@ -195,14 +195,15 @@ How it works:
 2. **Crosstalk removal:** each mic also picks up the other person, a bit quieter, so the same sentence often shows up in both transcripts. For every sentence, podscribe compares how loud the two tracks are at that moment, and keeps the sentence only from the track where it's louder by at least `ENERGY_MARGIN_DB`. Sentences that overlap in time and text with a kept sentence from the other track are dropped as duplicates
 3. Both tracks are merged in time order. Consecutive sentences from the same speaker become one paragraph
 4. **Host check:** the speaker who talks first (or last, see `HOST_SPEAKS`) should be the host. If that's the track you picked as the guest, podscribe warns you and asks whether to swap them
-5. **Talk ratio:** the summary shows how long each speaker talked, and how many words they said:
+5. **Talk ratio and speaking speed:** the summary shows how long each speaker talked, how many words they said, and how fast they spoke:
 
    ```
        Talk ratio:       Host 38% (16:04, 2'310 words) / Gast 62% (26:13, 3'870 words)
        Silence/other:    01:12
+       Speaking speed:   Host 144 wpm / Gast 148 wpm, average 146 wpm
    ```
 
-   Speaking time is measured from the sentences kept after crosstalk removal, trimmed to where that speaker's track is actually loudest. Overlapping sentences of the same speaker are counted once. "Silence/other" is the time when neither speaker talks. Set `RATIO_IN_TRANSCRIPT="true"` to also put these two lines at the top of the transcript
+   Speaking time is measured from the sentences kept after crosstalk removal, trimmed to where that speaker's track is actually loudest. Overlapping sentences of the same speaker are counted once. "Silence/other" is the time when neither speaker talks. Speaking speed is words per minute of each speaker's own speaking time; the average covers both speakers. Set `RATIO_IN_TRANSCRIPT="true"` to also put these lines at the top of the transcript
 
 Notes:
 
@@ -233,7 +234,7 @@ Guest track [1-8, several parts: 3,4]: 4,3
 Host track [1-8, several parts: 3,4, Enter when done]:
 ```
 
-Each episode gets its own timing and talk ratio. At the end, a summary combines all transcribed episodes. Its talk ratio adds up the speaking time of all episodes, so longer episodes weigh more. If one episode fails (e.g. a broken file), the others still run. You may still be asked to swap host and guest along the way, if the host check fails for an episode.
+Each episode gets its own timing, talk ratio and speaking speed. At the end, a summary combines all transcribed episodes. Its talk ratio and speaking speed add up the speaking time and words of all episodes, so longer episodes weigh more. If one episode fails (e.g. a broken file), the others still run. You may still be asked to swap host and guest along the way, if the host check fails for an episode.
 
 ### Recordings split into parts
 
@@ -303,7 +304,7 @@ The file is plain bash (`KEY="value"`, no spaces around `=`). Every value is che
 | `HOST_LABEL` | `Host` | Host name in speaker transcripts |
 | `GUEST_LABEL` | `Gast` | Guest name in speaker transcripts |
 | `SPEAKER_TIMESTAMPS` | `true` | Start each speaker paragraph with its time, like `[00:01:23]` |
-| `RATIO_IN_TRANSCRIPT` | `false` | `true` starts speaker transcripts with the talk ratio and silence |
+| `RATIO_IN_TRANSCRIPT` | `false` | `true` starts speaker transcripts with the talk ratio, silence and speaking speed |
 
 Example `podscribe.conf` that writes subtitles too and runs on 8 threads:
 
