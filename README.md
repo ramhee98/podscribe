@@ -45,7 +45,7 @@ The model is downloaded automatically the first time you run `podscribe.sh`.
 ## Usage
 
 ```bash
-./podscribe.sh <folder> [--all | --newest] [--recursive] [--speakers] [--prompt "names, places"] [--config <path>]
+./podscribe.sh <folder> [--all | --newest] [--recursive] [--output source|base] [--speakers] [--prompt "names, places"] [--config <path>]
 ```
 
 | Option | Description |
@@ -54,6 +54,7 @@ The model is downloaded automatically the first time you run `podscribe.sh`.
 | `--all` | Transcribe every mp3 in the folder |
 | `--newest` | Transcribe only the newest mp3 (the default, unless `MODE="all"` is set in the config) |
 | `--recursive` | Also search subfolders, see [below](#subfolders) |
+| `--output source\|base` | With `--recursive`: save transcripts next to each audio file (`source`) or all in `<folder>` (`base`). See [below](#where-transcripts-go) |
 | `--speakers` | Speaker mode, see [below](#speaker-mode) |
 | `--prompt "TEXT"` | Initial prompt passed to whisper, to help it spell guest names and local terms correctly |
 | `--config <path>` | Use this config file instead of `podscribe.conf` |
@@ -102,6 +103,28 @@ By default only the given folder itself is searched. With `--recursive` (or `REC
 - **`--speakers`**: lists the audio files by path relative to the given folder, grouped by subfolder, so the tracks of one episode are easy to spot
 
 Hidden folders and files (starting with `.`, including macOS `._` files) and the models folder are always skipped. Files are processed in order of folder, then name.
+
+#### Where transcripts go
+
+With `--recursive`, `OUTPUT_LOCATION` (or `--output`) decides where transcripts are saved:
+
+- **`source`** (default): next to each audio file
+- **`base`**: all in the folder you passed to podscribe. To avoid name collisions, each file name starts with its subfolder path, with `/` replaced by `OUTPUT_SEPARATOR` (default `_`)
+
+```
+~/Podcasts/MyShow/                   ./podscribe.sh ~/Podcasts/MyShow --recursive --all --output base
+├── intro.mp3                        → intro.txt
+├── season2/
+│   ├── ep05.mp3                     → season2_ep05.txt
+│   └── bonus/
+│       └── ep05.mp3                 → season2_bonus_ep05.txt
+```
+
+The "skip existing transcripts" check looks wherever transcripts are saved, so switching between `source` and `base` means existing transcripts in the other location aren't found. This applies to speaker mode too: its transcript name gets the same subfolder prefix. Kept WAV files (`KEEP_WAV`) always stay next to their source.
+
+Rarely, two different paths flatten to the same name (`a_b/c.mp3` and `a/b_c.mp3` both give `a_b_c.txt`). podscribe then refuses the second file instead of overwriting the first. Pick a different separator, e.g. `OUTPUT_SEPARATOR=" - "`.
+
+Without `--recursive`, transcripts are always saved next to the audio files and `OUTPUT_LOCATION` is ignored.
 
 ```
 ==> Summary
@@ -164,7 +187,7 @@ Host track [1-2]: 2
 Guest track [1-2]: 1
 ```
 
-Add `--recursive` to pick tracks from subfolders. The transcript is saved as `<name>.txt` next to the tracks (if they're in different folders, in the closest folder containing both). `<name>` is based on the first host file: the start it shares with the first guest file (`Folge 12` above), or the folder name if the file names have nothing in common.
+Add `--recursive` to pick tracks from subfolders. The transcript is saved as `<name>.txt` next to the tracks (if they're in different folders, in the closest folder containing both), or in the given folder with `--output base`. `<name>` is based on the first host file: the start it shares with the first guest file (`Folge 12` above), or the folder name if the file names have nothing in common.
 
 How it works:
 
@@ -237,6 +260,8 @@ The file is plain bash (`KEY="value"`, no spaces around `=`). Every value is che
 | `MODE` | `newest` | `newest` or `all`. Overridden by `--newest` / `--all` |
 | `RECURSIVE` | `false` | `true` also searches subfolders, like `--recursive` |
 | `MAX_DEPTH` | `3` | Folder levels below the given folder to search when `RECURSIVE` is on. `1` = direct subfolders only, `0` = unlimited |
+| `OUTPUT_LOCATION` | `source` | With `RECURSIVE`: `source` saves transcripts next to each audio file, `base` saves them all in the given folder. Overridden by `--output` |
+| `OUTPUT_SEPARATOR` | `_` | With `OUTPUT_LOCATION="base"`: replaces `/` in the subfolder prefix (`season2/ep05.mp3` → `season2_ep05.txt`) |
 | `OUTPUT_FORMATS` | `txt` | Formats to write, separated by spaces or commas: `txt` `srt` `vtt` `lrc` `csv` `json` |
 | `THREADS` | *(empty = all CPU cores)* | Number of CPU threads whisper uses |
 | `OVERWRITE` | `false` | `false` skips episodes whose transcripts already exist in all `OUTPUT_FORMATS`. `true` re-transcribes them and replaces existing files |

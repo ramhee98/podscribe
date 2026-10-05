@@ -41,6 +41,17 @@ RECURSIVE="false"
 # true. 1 = only direct subfolders, 0 = unlimited.
 MAX_DEPTH="3"
 
+# Where transcripts go when RECURSIVE is true (ignored otherwise):
+#   "source" = next to each audio file
+#   "base"   = all in the folder given on the command line, named after their
+#              subfolder path, e.g. season2/ep05.mp3 -> season2_ep05.txt
+# Override on the command line with --output source|base.
+OUTPUT_LOCATION="source"
+
+# With OUTPUT_LOCATION="base": what replaces "/" between subfolder names in
+# transcript file names, e.g. "_" (season2_ep05.txt) or " - " (season2 - ep05.txt).
+OUTPUT_SEPARATOR="_"
+
 # Transcript formats to write next to each mp3, separated by spaces or commas.
 # Supported: txt srt vtt lrc csv json
 OUTPUT_FORMATS="txt"

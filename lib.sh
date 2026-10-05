@@ -35,6 +35,8 @@ config_defaults() {
     MODE="newest"
     RECURSIVE="false"
     MAX_DEPTH="3"
+    OUTPUT_LOCATION="source"
+    OUTPUT_SEPARATOR="_"
     OUTPUT_FORMATS="txt"
     THREADS=""
     OVERWRITE="false"
@@ -126,6 +128,10 @@ $(common_models)"
         || cfg_err RECURSIVE "$RECURSIVE" "expected true or false"
     [[ "$MAX_DEPTH" =~ ^[0-9]+$ ]] \
         || cfg_err MAX_DEPTH "$MAX_DEPTH" "expected a number of folder levels, or 0 for unlimited"
+    [[ "$OUTPUT_LOCATION" == "source" || "$OUTPUT_LOCATION" == "base" ]] \
+        || cfg_err OUTPUT_LOCATION "$OUTPUT_LOCATION" "expected source or base"
+    [[ -n "$OUTPUT_SEPARATOR" && "$OUTPUT_SEPARATOR" != */* && "$OUTPUT_SEPARATOR" != *$'\n'* ]] \
+        || cfg_err OUTPUT_SEPARATOR "$OUTPUT_SEPARATOR" "must be non-empty and can't contain / or line breaks"
     [[ -z "$THREADS" || "$THREADS" =~ ^[1-9][0-9]*$ ]] \
         || cfg_err THREADS "$THREADS" "expected a positive number, or empty for all cores"
     [[ "$OVERWRITE" == "true" || "$OVERWRITE" == "false" ]] \

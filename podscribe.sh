@@ -2,7 +2,8 @@
 #
 # podscribe - transcribe podcast episodes locally with whisper.cpp
 #
-# Usage: ./podscribe.sh <folder> [--all|--newest] [--recursive] [--speakers] [--prompt "names, places"] [--config <path>]
+# Usage: ./podscribe.sh <folder> [--all|--newest] [--recursive] [--output source|base] [--speakers]
+#                       [--prompt "names, places"] [--config <path>]
 
 set -euo pipefail
 
@@ -27,6 +28,8 @@ Options:
   --all              Transcribe every mp3 in the folder
   --newest           Transcribe only the newest mp3 (default)
   --recursive        Also search subfolders (up to MAX_DEPTH levels)
+  --output WHERE     With --recursive: save transcripts next to each audio file
+                     ("source", default) or all in <folder> ("base")
   --speakers         Speaker mode: pick one track per speaker (host, guest)
                      and get a single transcript labelled by speaker
   --prompt "TEXT"    Initial prompt for whisper (guest names, local terms).
@@ -47,6 +50,7 @@ folder=""
 cli_mode=""
 cli_diarize=""
 cli_recursive=""
+cli_output=""
 cli_prompt=""
 cli_prompt_set=false
 config_file=""
@@ -67,6 +71,15 @@ while [[ $# -gt 0 ]]; do
             ;;
         --recursive)
             cli_recursive="true"
+            shift
+            ;;
+        --output)
+            [[ $# -ge 2 ]] || die "--output requires source or base"
+            cli_output="$2"
+            shift 2
+            ;;
+        --output=*)
+            cli_output="${1#--output=}"
             shift
             ;;
         --prompt)
@@ -128,7 +141,20 @@ fi
 if [[ -n "$cli_recursive" ]]; then
     RECURSIVE="$cli_recursive"
 fi
+if [[ -n "$cli_output" ]]; then
+    [[ "$cli_output" == "source" || "$cli_output" == "base" ]] \
+        || die "Invalid --output '$cli_output' (expected source or base)"
+    OUTPUT_LOCATION="$cli_output"
+fi
 validate_config
+
+# OUTPUT_LOCATION only matters with subfolders: without them, the folder is the source.
+if [[ "$RECURSIVE" == false ]]; then
+    if [[ -n "$cli_output" ]]; then
+        warn "--output has no effect without --recursive"
+    fi
+    OUTPUT_LOCATION="source"
+fi
 
 # --- Dependencies -------------------------------------------------------------
 
@@ -174,6 +200,23 @@ relpath() {
         echo "."
     else
         printf '%s\n' "${1#"$root"/}"
+    fi
+}
+
+# output_path <source folder> <name>: where a transcript called <name> for files in
+# <source folder> goes. With OUTPUT_LOCATION="base" that's the root folder, with
+# the relative subfolder path as prefix (season2/ep05 -> season2_ep05).
+output_path() {
+    local dir="$1" name="$2" rel
+    if [[ "$OUTPUT_LOCATION" == "source" ]]; then
+        printf '%s/%s\n' "$dir" "$name"
+        return
+    fi
+    rel="$(relpath "$dir")"
+    if [[ "$rel" == "." ]]; then
+        printf '%s/%s\n' "$root" "$name"
+    else
+        printf '%s/%s%s%s\n' "$root" "${rel//\//$OUTPUT_SEPARATOR}" "$OUTPUT_SEPARATOR" "$name"
     fi
 }
 
@@ -526,11 +569,12 @@ transcribe_speakers() {
     fi
 
     # The transcript is named after the first host file (and the first guest file, if
-    # their names share a start) and goes next to them (or their closest shared folder).
+    # their names share a start) and goes next to them (or their closest shared folder),
+    # or into the root folder with OUTPUT_LOCATION="base".
     local episode out out_dir host_file="${host_files[0]}" guest_file="${guest_files[0]}"
     out_dir="$(common_dir "$host_file" "$guest_file")"
     episode="$(episode_name "$host_file" "$guest_file" "$out_dir")"
-    out="${out_dir}/${episode}.txt"
+    out="$(output_path "$out_dir" "$episode").txt"
     local host_desc guest_desc
     host_desc="$(describe_parts "${host_files[@]}")"
     guest_desc="$(describe_parts "${guest_files[@]}")"
@@ -647,6 +691,10 @@ fi
 
 ensure_model
 
+if [[ "$OUTPUT_LOCATION" == "base" ]]; then
+    info "Saving all transcripts in $folder"
+fi
+
 # --- Transcription ------------------------------------------------------------
 
 total=${#mp3s[@]}
@@ -660,6 +708,8 @@ sum_audio=0
 sum_whisper_known=0
 sum_whisper=0
 sum_total=0
+# Output names used so far, to catch collisions with OUTPUT_LOCATION="base".
+used_bases=()
 # Per-folder counts for the summary (parallel arrays, bash 3.2 has no maps).
 folder_names=()
 folder_done=()
@@ -689,10 +739,21 @@ count_folder() {
 for mp3 in "${mp3s[@]}"; do
     i=$((i + 1))
     name="$(relpath "$mp3")"
-    base="${mp3%.*}"
+    base="$(output_path "$(dirname "$mp3")" "$(basename "${mp3%.*}")")"
 
     echo
     info "[$i/$total] $name"
+
+    # With OUTPUT_LOCATION="base", different subfolder paths can flatten to the same
+    # name (a_b/c.mp3 and a/b_c.mp3). Don't let one file overwrite another's transcript.
+    if [[ " ${used_bases[*]-} " == *" $(printf '%q' "$base") "* ]]; then
+        warn "Transcript name $(relpath "$base") is already used by another file in this run."
+        warn "Choose a different OUTPUT_SEPARATOR to tell them apart."
+        failed=$((failed + 1))
+        count_folder "$mp3" failed
+        continue
+    fi
+    used_bases+=("$(printf '%q' "$base")")
 
     if [[ "$OVERWRITE" == false ]]; then
         all_exist=true
@@ -743,7 +804,8 @@ for mp3 in "${mp3s[@]}"; do
     fi
     whisper_time="$(elapsed_since "$whisper_start")"
 
-    keep_or_remove_wav "$wav" "${base}.wav"
+    # The WAV is audio, not a transcript, so it always stays next to its source.
+    keep_or_remove_wav "$wav" "${mp3%.*}.wav"
 
     # Write into place only after success so partial runs never count as done.
     # Without OVERWRITE, transcripts that already exist are left untouched.
@@ -752,7 +814,7 @@ for mp3 in "${mp3s[@]}"; do
         dest="${base}.${fmt}"
         if [[ "$OVERWRITE" == true || ! -f "$dest" ]]; then
             mv "${out_base}.${fmt}" "$dest"
-            saved+=("$(basename "$dest")")
+            saved+=("$(relpath "$dest")")
         fi
     done
     total_time="$(elapsed_since "$file_start")"
