@@ -49,6 +49,13 @@ VAD_MIN_SILENCE_MS="500"
 # word beginnings and endings aren't clipped.
 VAD_SPEECH_PAD_MS="200"
 
+# false = while whisper runs, show only a progress line per file or track, like
+#   ==> Transcribing host track... 42% (01:13)
+# true = show the transcribed text as it comes. Override on the command line
+# with --show-text / --hide-text. --debug shows all output regardless.
+# The full whisper-cli output is logged; if it fails, the log's path is shown.
+SHOW_TEXT="false"
+
 # Spoken language as a whisper language code (de, en, fr, ...), or "auto"
 # to detect it.
 LANGUAGE="de"

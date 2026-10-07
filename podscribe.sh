@@ -3,7 +3,8 @@
 # podscribe - transcribe podcast episodes locally with whisper.cpp
 #
 # Usage: ./podscribe.sh <folder> [--all|--newest] [--recursive|--no-recursive] [--output source|base] [--speakers]
-#                       [--vad|--no-vad] [--prompt "names, places"] [--config <path>]
+#                       [--vad|--no-vad] [--show-text|--hide-text] [--debug]
+#                       [--prompt "names, places"] [--config <path>]
 
 set -euo pipefail
 
@@ -34,6 +35,9 @@ Options:
                      ("base", default) or next to each audio file ("source")
   --vad, --no-vad    Use voice activity detection (Silero) to skip silence
                      (default: on, see VAD in the config)
+  --show-text        Show the transcribed text while whisper runs
+  --hide-text        Only show a progress line while whisper runs (default)
+  --debug            Show all whisper-cli and ffmpeg output
   --speakers         Speaker mode: pick one track per speaker (host, guest)
                      and get a single transcript labelled by speaker
   --prompt "TEXT"    Initial prompt for whisper (guest names, local terms).
@@ -56,6 +60,8 @@ cli_diarize=""
 cli_recursive=""
 cli_output=""
 cli_vad=""
+cli_show_text=""
+DEBUG=false
 cli_prompt=""
 cli_prompt_set=false
 config_file=""
@@ -88,6 +94,18 @@ while [[ $# -gt 0 ]]; do
             ;;
         --no-vad)
             cli_vad="false"
+            shift
+            ;;
+        --show-text)
+            cli_show_text="true"
+            shift
+            ;;
+        --hide-text)
+            cli_show_text="false"
+            shift
+            ;;
+        --debug)
+            DEBUG=true
             shift
             ;;
         --output)
@@ -160,6 +178,9 @@ if [[ -n "$cli_recursive" ]]; then
 fi
 if [[ -n "$cli_vad" ]]; then
     VAD="$cli_vad"
+fi
+if [[ -n "$cli_show_text" ]]; then
+    SHOW_TEXT="$cli_show_text"
 fi
 if [[ -n "$cli_output" ]]; then
     [[ "$cli_output" == "source" || "$cli_output" == "base" ]] \
@@ -318,21 +339,44 @@ audio_duration() {
 
 # convert_to_wav <input> <output.wav>: 16 kHz mono, as whisper expects
 convert_to_wav() {
-    run_bg ffmpeg -nostdin -hide_banner -loglevel error -y \
+    run_bg ffmpeg -nostdin -hide_banner -loglevel "$(ffmpeg_loglevel)" -y \
         -i "$1" -ar 16000 -ac 1 -c:a pcm_s16le "$2"
 }
 
-# run_whisper <wav> <output base> <output format flags...>
-# Segments go to stdout (live progress); model/debug noise goes to <output base>.log,
-# whose tail is shown if whisper fails.
+# ffmpeg's log level: only errors, unless --debug.
+ffmpeg_loglevel() {
+    if [[ "$DEBUG" == true ]]; then
+        echo info
+    else
+        echo error
+    fi
+}
+
+# show_progress <label> <percent or empty> <elapsed seconds> <spinner char>
+# Rewrites the current terminal line, e.g. "==> Transcribing host track... 42% (00:31)".
+show_progress() {
+    local state="$2"
+    [[ -n "$state" ]] || state="$4"
+    printf '\r\033[K%s==>%s %s... %s (%s)' "$C_BLUE" "$C_OFF" "$1" "$state" "$(format_duration "$3")"
+}
+
+# run_whisper <label> <wav> <output base> <output format flags...>
+# All whisper-cli output is saved to a log in the work folder. It's deleted on
+# success; on failure it's kept outside the work folder and its path is shown.
+#   default (SHOW_TEXT=false): only a progress line that updates in place, read
+#       from whisper's own progress output (-pp, roughly one step per 30 s of audio)
+#   SHOW_TEXT=true: the transcribed segments as they come (stdout)
+#   --debug: everything, including model loading logs
+# -np (--no-prints) isn't used: it doesn't hide the transcribed text, and the
+# loading logs it drops are what the log is for.
 #
 # With VAD, whisper only transcribes the detected speech and maps the segment
 # timestamps back to the original timeline (tested: speech after 10 s of silence
 # starts at 10.02 s, not 0). Token timestamps are NOT mapped back, so only
 # segment timestamps may be used (diarize.py does).
 run_whisper() {
-    local wav="$1" out_base="$2"
-    shift 2
+    local label="$1" wav="$2" out_base="$3"
+    shift 3
     local args=(-m "$MODEL_PATH" -l "$LANGUAGE" -t "$THREADS" -f "$wav" -of "$out_base" -pp "$@")
     if [[ -n "$prompt" ]]; then
         args+=(--prompt "$prompt")
@@ -343,10 +387,45 @@ run_whisper() {
                --vad-min-silence-duration-ms "$VAD_MIN_SILENCE_MS"
                --vad-speech-pad-ms "$VAD_SPEECH_PAD_MS")
     fi
-    if ! run_bg whisper-cli "${args[@]}" 2>"${out_base}.log"; then
-        warn "whisper-cli failed. Last log lines:"
-        tail -n 20 "${out_base}.log" >&2 || true
+
+    local log="${out_base}.log" status=0 start=$SECONDS
+    : > "$log"
+    if [[ "$DEBUG" == true ]]; then
+        info "$label with $THREADS threads (debug: all whisper-cli output)"
+        run_bg whisper-cli "${args[@]}" > >(tee -a "$log") 2> >(tee -a "$log" >&2) || status=$?
+    elif [[ "$SHOW_TEXT" == true ]]; then
+        info "$label with $THREADS threads (this may take a while)"
+        run_bg whisper-cli "${args[@]}" > >(tee -a "$log") 2>> "$log" || status=$?
+    else
+        # Background + polling the log for "progress = N%". Ctrl+C is handled by the
+        # abort trap (after the current sleep), which stops whisper-cli too.
+        whisper-cli "${args[@]}" >> "$log" 2>&1 <&0 &
+        local pid=$! pct spinner='|/-\' i=0
+        if [[ -t 1 ]]; then
+            while kill -0 "$pid" 2>/dev/null; do
+                pct="$(grep -o 'progress = *[0-9]*%' "$log" 2>/dev/null | tail -n 1 | grep -o '[0-9]*%' || true)"
+                show_progress "$label" "$pct" $((SECONDS - start)) "${spinner:i++%4:1}"
+                sleep 0.5
+            done
+            printf '\r\033[K'
+        else
+            info "$label with $THREADS threads..."
+        fi
+        wait "$pid" || status=$?
+    fi
+
+    if (( status != 0 )); then
+        local kept
+        kept="$(mktemp -t podscribe-whisper)"
+        mv "$log" "$kept"
+        warn "whisper-cli failed (exit code $status). Last log lines:"
+        tail -n 20 "$kept" >&2 || true
+        warn "Full whisper-cli log: $kept"
         return 1
+    fi
+    rm -f "$log"
+    if [[ "$DEBUG" == false && "$SHOW_TEXT" == false ]]; then
+        ok "$label done ($(format_duration $((SECONDS - start))))"
     fi
 }
 
@@ -481,7 +560,7 @@ build_track() {
     else
         info "[$role] Joining $# parts into one track"
         # All parts are identical PCM wavs now, so they can be joined without re-encoding.
-        run_bg ffmpeg -nostdin -hide_banner -loglevel error -y -f concat -safe 0 -i "$list" \
+        run_bg ffmpeg -nostdin -hide_banner -loglevel "$(ffmpeg_loglevel)" -y -f concat -safe 0 -i "$list" \
             -c copy "$out" || die "Joining the $role parts failed"
         rm -f "${tmpdir}/${role}"_part*.wav
     fi
@@ -646,9 +725,8 @@ speaker_episode() {
         else
             register_keep "$guest_wav" "$guest_keep"
         fi
-        info "[$role] Transcribing with $THREADS threads (this may take a while)"
         t="$(now)"
-        run_whisper "$wav" "${tmpdir}/${role}" -oj -ojf \
+        run_whisper "Transcribing $role track" "$wav" "${tmpdir}/${role}" -oj -ojf \
             || die "Transcription failed for the $role track"
         sum_whisper="$(add_seconds "$sum_whisper" "$(elapsed_since "$t")")"
     done
@@ -1005,7 +1083,6 @@ for mp3 in "${mp3s[@]}"; do
     fi
     register_keep "$wav" "$keep_dest"
 
-    info "Transcribing with $THREADS threads (this may take a while)"
     format_flags=()
     for fmt in "${FORMATS[@]}"; do
         format_flags+=("$(format_flag "$fmt")")
@@ -1016,7 +1093,7 @@ for mp3 in "${mp3s[@]}"; do
     fi
 
     whisper_start="$(now)"
-    if ! run_whisper "$wav" "$out_base" "${format_flags[@]}"; then
+    if ! run_whisper "Transcribing" "$wav" "$out_base" "${format_flags[@]}"; then
         warn "Transcription failed for $name"
         failed=$((failed + 1))
         count_folder "$mp3" failed

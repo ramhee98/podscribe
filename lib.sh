@@ -146,6 +146,7 @@ config_defaults() {
     MODEL_URL="https://huggingface.co/ggerganov/whisper.cpp/resolve/main"
     MODELS_DIR="models"
     VAD="true"
+    SHOW_TEXT="false"
     VAD_MODEL="ggml-silero-v6.2.0.bin"
     VAD_MODEL_URL="https://huggingface.co/ggml-org/whisper-vad/resolve/main"
     VAD_THRESHOLD="0.5"
@@ -254,6 +255,8 @@ $(common_models)"
         || cfg_err MODEL_URL "$MODEL_URL" "expected an http(s) URL"
     [[ "$VAD" == "true" || "$VAD" == "false" ]] \
         || cfg_err VAD "$VAD" "expected true or false"
+    [[ "$SHOW_TEXT" == "true" || "$SHOW_TEXT" == "false" ]] \
+        || cfg_err SHOW_TEXT "$SHOW_TEXT" "expected true or false"
     if [[ -z "$VAD_MODEL" || "$VAD_MODEL" == */* || "$VAD_MODEL" != ggml-*.bin ]]; then
         die "Invalid setting VAD_MODEL=\"$VAD_MODEL\" (expected a file name like ggml-silero-v6.2.0.bin)${CONFIG_FILE:+
 Check $CONFIG_FILE}

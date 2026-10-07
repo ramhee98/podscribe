@@ -59,6 +59,8 @@ The model is downloaded automatically the first time you run `podscribe.sh`.
 | `--output source\|base` | With recursive search: save all transcripts in `<folder>` (`base`, the default) or next to each audio file (`source`). See [below](#where-transcripts-go) |
 | `--speakers` | Speaker mode, see [below](#speaker-mode) |
 | `--vad`, `--no-vad` | Turn voice activity detection on or off (default on), see [below](#voice-activity-detection-vad) |
+| `--show-text`, `--hide-text` | Show the transcribed text while whisper runs, or only a progress line (default). See [below](#terminal-output) |
+| `--debug` | Show all whisper-cli and ffmpeg output |
 | `--prompt "TEXT"` | Initial prompt passed to whisper, to help it spell guest names and local terms correctly |
 | `--config <path>` | Use this config file instead of `podscribe.conf` |
 | `-h`, `--help` | Show help |
@@ -159,6 +161,23 @@ With `--no-recursive`, transcripts are always saved next to the audio files and 
       Season 1             2 transcribed
       Season 2             1 transcribed, 1 failed
 ```
+
+### Terminal output
+
+While whisper runs, podscribe shows a single progress line per file (or per track in speaker mode) that updates in place, instead of the transcribed text:
+
+```
+==> Transcribing host track... 42% (01:13)
+✓ Transcribing host track done (02:51)
+```
+
+The percentage comes from whisper-cli's own progress output, which reports roughly every 30 seconds of audio. Until the first report, a spinner shows that it's working.
+
+- `--show-text` (or `SHOW_TEXT="true"`) shows the transcribed text as it comes, like before
+- `--debug` shows everything: the text, whisper-cli's model loading logs and progress lines, and ffmpeg's messages
+- The full whisper-cli output always goes to a log file. It's deleted when transcription succeeds. If whisper-cli fails, podscribe shows the last lines and keeps the full log, printing its path (e.g. `Full whisper-cli log: /var/folders/.../podscribe-whisper.75vw2ChbcW`)
+- The transcripts and other output files are the same in every mode
+- When the output isn't a terminal (e.g. piped into a log file), the progress line is replaced by one line at the start and one at the end
 
 ### Voice activity detection (VAD)
 
@@ -327,6 +346,7 @@ The file is plain bash (`KEY="value"`, no spaces around `=`). Every value is che
 | `MODEL_URL` | `https://huggingface.co/ggerganov/whisper.cpp/resolve/main` | Base URL for downloading the model. The model is fetched from `${MODEL_URL}/${MODEL_NAME}` |
 | `MODELS_DIR` | `models` | Where models are stored. Relative paths are resolved against the script directory |
 | `VAD` | `true` | Use voice activity detection. Overridden by `--vad` / `--no-vad` |
+| `SHOW_TEXT` | `false` | `true` shows the transcribed text while whisper runs, `false` only a progress line. Overridden by `--show-text` / `--hide-text` |
 | `VAD_MODEL` | `ggml-silero-v6.2.0.bin` | Silero VAD model file in `MODELS_DIR`, downloaded if missing |
 | `VAD_MODEL_URL` | `https://huggingface.co/ggml-org/whisper-vad/resolve/main` | Base URL for downloading the VAD model |
 | `VAD_THRESHOLD` | `0.5` | How sure the model must be that a moment is speech (0–1) |
